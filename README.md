@@ -18,7 +18,9 @@ swift run DonCSV
   type to replace, double-click or Return to edit, and Escape to cancel
 - Native alternating row stripes with a non-CSV row-number gutter
 - Double-click column headers to rename them
-- Copy and paste selected cells, including tab/newline spreadsheet data
+- Shift-click or Shift-arrow to select rectangular cell ranges
+- Copy and paste selected ranges while preserving their row/column pattern
+- Paste tab/newline spreadsheet data; a single value fills a larger selection
 - Automatic saving after edits
 - External file changes appear within about one second
 - Add and delete rows or columns

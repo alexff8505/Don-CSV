@@ -90,22 +90,33 @@ final class CSVDocument: ObservableObject {
         scheduleSave()
     }
 
-    func pasteValues(_ values: [[String]], startingAtRow startRow: Int, column startColumn: Int) {
+    func pasteValues(
+        _ values: [[String]],
+        startingAtRow startRow: Int,
+        column startColumn: Int,
+        selectedRowCount: Int = 1,
+        selectedColumnCount: Int = 1
+    ) {
         guard fileURL != nil, startRow >= 0, startColumn >= 0, !values.isEmpty else { return }
         let pastedWidth = values.map(\.count).max() ?? 0
         guard pastedWidth > 0 else { return }
 
-        let requiredColumnCount = max(columnCount, startColumn + pastedWidth)
-        while rows.count < startRow + values.count {
+        let targetHeight = max(values.count, selectedRowCount)
+        let targetWidth = max(pastedWidth, selectedColumnCount)
+        let requiredColumnCount = max(columnCount, startColumn + targetWidth)
+        while rows.count < startRow + targetHeight {
             rows.append(Array(repeating: "", count: requiredColumnCount))
         }
 
-        for (rowOffset, pastedRow) in values.enumerated() {
+        for rowOffset in 0..<targetHeight {
             let rowIndex = startRow + rowOffset
             while rows[rowIndex].count < requiredColumnCount {
                 rows[rowIndex].append("")
             }
-            for (columnOffset, value) in pastedRow.enumerated() {
+            let pastedRow = values[rowOffset % values.count]
+            for columnOffset in 0..<targetWidth {
+                let sourceColumn = columnOffset % pastedWidth
+                let value = pastedRow.indices.contains(sourceColumn) ? pastedRow[sourceColumn] : ""
                 rows[rowIndex][startColumn + columnOffset] = value
             }
         }

@@ -142,14 +142,14 @@ struct CSVTableView: NSViewRepresentable {
         table.editHandler = { [weak coordinator = context.coordinator] row, column, replacement in
             coordinator?.beginEditing(row: row, column: column, replacement: replacement)
         }
-        table.clearHandler = { [weak coordinator = context.coordinator] row, column in
-            coordinator?.clearCell(row: row, column: column)
+        table.clearHandler = { [weak coordinator = context.coordinator] rows, columns in
+            coordinator?.clearCells(rows: rows, columns: columns)
         }
-        table.copyHandler = { [weak coordinator = context.coordinator] row, column in
-            coordinator?.copyValue(row: row, column: column) ?? ""
+        table.copyHandler = { [weak coordinator = context.coordinator] rows, columns in
+            coordinator?.copyValues(rows: rows, columns: columns) ?? ""
         }
-        table.pasteHandler = { [weak coordinator = context.coordinator] row, column, text in
-            coordinator?.paste(text, atRow: row, column: column)
+        table.pasteHandler = { [weak coordinator = context.coordinator] rows, columns, text in
+            coordinator?.paste(text, intoRows: rows, columns: columns)
         }
         context.coordinator.rebuildColumns()
         return scrollView
@@ -188,6 +188,7 @@ struct CSVTableView: NSViewRepresentable {
                 let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? RowNumberCellView)
                     ?? RowNumberCellView(identifier: identifier)
                 cell.number = row + 1
+                cell.isRangeSelected = (tableView as? SpreadsheetTableView)?.rowIsSelected(row) ?? false
                 return cell
             }
 
@@ -206,8 +207,7 @@ struct CSVTableView: NSViewRepresentable {
                 self?.handleCellClick(field, event: event) ?? false
             }
             if let spreadsheet = tableView as? SpreadsheetTableView {
-                cell.isCellSelected = spreadsheet.selectedCellRow == row
-                    && spreadsheet.selectedCellColumn == column
+                cell.isCellSelected = spreadsheet.selectionContains(row: row, column: column)
             }
             return cell
         }
@@ -304,37 +304,51 @@ struct CSVTableView: NSViewRepresentable {
             }
         }
 
-        func clearCell(row: Int, column: Int) {
-            parent.document.setValue("", row: row, column: column)
-            lastRevision = parent.document.revision
-            if let cell = tableView?.view(
-                atColumn: column + 1,
-                row: row,
-                makeIfNecessary: true
-            ) as? CSVCellView {
-                cell.editor.stringValue = ""
+        func clearCells(rows: ClosedRange<Int>, columns: ClosedRange<Int>) {
+            parent.document.pasteValues(
+                [[""]],
+                startingAtRow: rows.lowerBound,
+                column: columns.lowerBound,
+                selectedRowCount: rows.count,
+                selectedColumnCount: columns.count
+            )
+        }
+
+        func copyValues(rows: ClosedRange<Int>, columns: ClosedRange<Int>) -> String {
+            let values = rows.map { row in
+                columns.map { column in
+                    parent.document.value(row: row, column: column)
+                }
             }
+            return ClipboardGrid.encode(values)
         }
 
-        func copyValue(row: Int, column: Int) -> String {
-            parent.document.value(row: row, column: column)
-        }
-
-        func paste(_ text: String, atRow row: Int, column: Int) {
-            let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-            var lines = normalized.components(separatedBy: "\n")
-            if lines.last == "" && lines.count > 1 { lines.removeLast() }
-            let values = lines.map { $0.components(separatedBy: "\t") }
-            parent.document.pasteValues(values, startingAtRow: row, column: column)
+        func paste(
+            _ text: String,
+            intoRows rows: ClosedRange<Int>,
+            columns: ClosedRange<Int>
+        ) {
+            let values = ClipboardGrid.decode(text)
+            parent.document.pasteValues(
+                values,
+                startingAtRow: rows.lowerBound,
+                column: columns.lowerBound,
+                selectedRowCount: rows.count,
+                selectedColumnCount: columns.count
+            )
         }
 
         private func handleCellClick(_ field: CSVTextField, event: NSEvent) -> Bool {
             guard let tableView = tableView as? SpreadsheetTableView else { return false }
             let row = field.tag / 100_000
             let column = field.tag % 100_000
-            tableView.selectCell(row: row, column: column)
+            tableView.selectCell(
+                row: row,
+                column: column,
+                extending: event.modifierFlags.contains(.shift)
+            )
 
-            if event.clickCount >= 2 {
+            if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
                 field.originalValue = parent.document.value(row: row, column: column)
                 field.isEditable = true
                 field.isSelectable = true
@@ -415,26 +429,102 @@ struct CSVTableView: NSViewRepresentable {
     }
 }
 
+private enum ClipboardGrid {
+    static func encode(_ rows: [[String]]) -> String {
+        rows.map { row in row.map(escape).joined(separator: "\t") }
+            .joined(separator: "\n")
+    }
+
+    static func decode(_ text: String) -> [[String]] {
+        let characters = Array(text.replacingOccurrences(of: "\r\n", with: "\n"))
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var quoted = false
+        var index = 0
+
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\"" {
+                if quoted, index + 1 < characters.count, characters[index + 1] == "\"" {
+                    field.append("\"")
+                    index += 1
+                } else {
+                    quoted.toggle()
+                }
+            } else if character == "\t", !quoted {
+                row.append(field)
+                field = ""
+            } else if (character == "\n" || character == "\r"), !quoted {
+                row.append(field)
+                rows.append(row)
+                row = []
+                field = ""
+            } else {
+                field.append(character)
+            }
+            index += 1
+        }
+
+        if !field.isEmpty || !row.isEmpty || rows.isEmpty {
+            row.append(field)
+            rows.append(row)
+        }
+        return rows
+    }
+
+    private static func escape(_ value: String) -> String {
+        guard value.contains("\t") || value.contains("\n") || value.contains("\r") || value.contains("\"") else {
+            return value
+        }
+        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+}
+
 @MainActor
 private final class SpreadsheetTableView: NSTableView {
     var selectionHandler: ((Int, Int) -> Void)?
     var editHandler: ((Int, Int, String?) -> Void)?
-    var clearHandler: ((Int, Int) -> Void)?
-    var copyHandler: ((Int, Int) -> String)?
-    var pasteHandler: ((Int, Int, String) -> Void)?
+    var clearHandler: ((ClosedRange<Int>, ClosedRange<Int>) -> Void)?
+    var copyHandler: ((ClosedRange<Int>, ClosedRange<Int>) -> String)?
+    var pasteHandler: ((ClosedRange<Int>, ClosedRange<Int>, String) -> Void)?
     private(set) var selectedCellRow = -1
     private(set) var selectedCellColumn = -1
+    private var anchorRow = -1
+    private var anchorColumn = -1
+
+    var selectedRows: ClosedRange<Int> {
+        min(anchorRow, selectedCellRow)...max(anchorRow, selectedCellRow)
+    }
+
+    var selectedColumns: ClosedRange<Int> {
+        min(anchorColumn, selectedCellColumn)...max(anchorColumn, selectedCellColumn)
+    }
 
     override var acceptsFirstResponder: Bool { true }
 
-    func selectCell(row: Int, column: Int) {
+    func selectionContains(row: Int, column: Int) -> Bool {
+        guard anchorRow >= 0, anchorColumn >= 0,
+              selectedCellRow >= 0, selectedCellColumn >= 0 else { return false }
+        return selectedRows.contains(row) && selectedColumns.contains(column)
+    }
+
+    func rowIsSelected(_ row: Int) -> Bool {
+        anchorRow >= 0 && selectedCellRow >= 0 && selectedRows.contains(row)
+    }
+
+    func selectCell(row: Int, column: Int, extending: Bool = false) {
         guard row >= 0, row < numberOfRows,
               column >= 0, column < max(numberOfColumns - 1, 0) else { return }
 
-        setSelectionAppearance(false, row: selectedCellRow, column: selectedCellColumn)
+        setSelectionAppearance(false)
+        if !extending || anchorRow < 0 || anchorColumn < 0 {
+            anchorRow = row
+            anchorColumn = column
+        }
         selectedCellRow = row
         selectedCellColumn = column
-        setSelectionAppearance(true, row: row, column: column)
+        setSelectionAppearance(true)
         scrollRowToVisible(row)
         scrollColumnToVisible(column + 1)
         selectionHandler?(row, column)
@@ -468,7 +558,12 @@ private final class SpreadsheetTableView: NSTableView {
         }
 
         if let movement {
-            moveSelection(rowDelta: movement.row, columnDelta: movement.column)
+            let extending = event.modifierFlags.contains(.shift) && event.keyCode != 48
+            moveSelection(
+                rowDelta: movement.row,
+                columnDelta: movement.column,
+                extending: extending
+            )
             return
         }
 
@@ -476,7 +571,7 @@ private final class SpreadsheetTableView: NSTableView {
         case 36, 76: // Return and keypad Enter
             editHandler?(selectedCellRow, selectedCellColumn, nil)
         case 51, 117: // Delete and forward delete
-            clearHandler?(selectedCellRow, selectedCellColumn)
+            clearHandler?(selectedRows, selectedColumns)
         default:
             guard event.modifierFlags.intersection([.command, .control]).isEmpty,
                   let characters = event.characters,
@@ -489,20 +584,36 @@ private final class SpreadsheetTableView: NSTableView {
         }
     }
 
-    private func moveSelection(rowDelta: Int, columnDelta: Int) {
+    private func moveSelection(rowDelta: Int, columnDelta: Int, extending: Bool) {
         let dataColumnCount = max(numberOfColumns - 1, 0)
         guard numberOfRows > 0, dataColumnCount > 0 else { return }
         let row = min(max(selectedCellRow + rowDelta, 0), numberOfRows - 1)
         let column = min(max(selectedCellColumn + columnDelta, 0), dataColumnCount - 1)
-        selectCell(row: row, column: column)
+        selectCell(row: row, column: column, extending: extending)
     }
 
-    private func setSelectionAppearance(_ selected: Bool, row: Int, column: Int) {
-        guard row >= 0, column >= 0,
-              let cell = view(atColumn: column + 1, row: row, makeIfNecessary: false) as? CSVCellView else {
-            return
+    private func setSelectionAppearance(_ selected: Bool) {
+        guard anchorRow >= 0, anchorColumn >= 0,
+              selectedCellRow >= 0, selectedCellColumn >= 0 else { return }
+
+        for row in selectedRows {
+            if let gutter = view(
+                atColumn: 0,
+                row: row,
+                makeIfNecessary: false
+            ) as? RowNumberCellView {
+                gutter.isRangeSelected = selected
+            }
+            for column in selectedColumns {
+                if let cell = view(
+                    atColumn: column + 1,
+                    row: row,
+                    makeIfNecessary: false
+                ) as? CSVCellView {
+                    cell.isCellSelected = selected
+                }
+            }
         }
-        cell.isCellSelected = selected
     }
 
     @objc func copy(_ sender: Any?) {
@@ -518,7 +629,7 @@ private final class SpreadsheetTableView: NSTableView {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(
-            copyHandler?(selectedCellRow, selectedCellColumn) ?? "",
+            copyHandler?(selectedRows, selectedColumns) ?? "",
             forType: .string
         )
     }
@@ -526,7 +637,7 @@ private final class SpreadsheetTableView: NSTableView {
     private func pasteSelection() {
         guard selectedCellRow >= 0, selectedCellColumn >= 0,
               let text = NSPasteboard.general.string(forType: .string) else { return }
-        pasteHandler?(selectedCellRow, selectedCellColumn, text)
+        pasteHandler?(selectedRows, selectedColumns, text)
     }
 }
 
@@ -610,6 +721,13 @@ private final class EditableTableHeaderView: NSTableHeaderView, NSTextFieldDeleg
 private final class RowNumberCellView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
 
+    var isRangeSelected = false {
+        didSet {
+            label.textColor = isRangeSelected ? .controlAccentColor : .secondaryLabelColor
+            needsDisplay = true
+        }
+    }
+
     var number = 0 {
         didSet { label.stringValue = String(number) }
     }
@@ -629,7 +747,9 @@ private final class RowNumberCellView: NSTableCellView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        (isRangeSelected
+            ? NSColor.controlAccentColor.withAlphaComponent(0.12)
+            : NSColor.windowBackgroundColor).setFill()
         bounds.fill()
         NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
         let edge = NSBezierPath()
