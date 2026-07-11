@@ -70,6 +70,11 @@ struct ContentView: View {
                 }
                 .disabled(document.fileURL == nil)
 
+                Button { renameSelectedColumn() } label: {
+                    Label("Rename Column", systemImage: "pencil")
+                }
+                .disabled(selectedColumn < 0)
+
                 Button {
                     if selectedRow >= 0 { document.deleteRow(selectedRow); selectedRow = -1 }
                 } label: {
@@ -94,6 +99,26 @@ struct ContentView: View {
             }
             return true
         }
+    }
+
+    private func renameSelectedColumn() {
+        guard selectedColumn >= 0, selectedColumn < document.columnCount else { return }
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        input.stringValue = document.value(row: 0, column: selectedColumn)
+        input.placeholderString = "Column \(selectedColumn + 1)"
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Column"
+        alert.informativeText = "Enter the name for column \(selectedColumn + 1)."
+        alert.alertStyle = .informational
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        alert.window.initialFirstResponder = input
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        document.setValue(input.stringValue, row: 0, column: selectedColumn)
     }
 }
 
@@ -655,15 +680,26 @@ private final class EditableTableHeaderView: NSTableHeaderView, NSTextFieldDeleg
     private var activeEditor: NSTextField?
     private var isCancelling = false
 
-    override func mouseDown(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        let physicalColumn = column(at: location)
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        installDoubleClickRecognizer()
+    }
 
-        guard event.clickCount >= 2, physicalColumn > 0 else {
-            super.mouseDown(with: event)
-            return
-        }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installDoubleClickRecognizer()
+    }
 
+    private func installDoubleClickRecognizer() {
+        let recognizer = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
+        recognizer.numberOfClicksRequired = 2
+        recognizer.buttonMask = 0x1
+        addGestureRecognizer(recognizer)
+    }
+
+    @objc private func handleDoubleClick(_ recognizer: NSClickGestureRecognizer) {
+        let physicalColumn = column(at: recognizer.location(in: self))
+        guard physicalColumn > 0 else { return }
         beginEditing(physicalColumn: physicalColumn)
     }
 
