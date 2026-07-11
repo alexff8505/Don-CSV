@@ -112,7 +112,7 @@ struct CSVTableView: NSViewRepresentable {
         table.allowsColumnResizing = true
         table.allowsMultipleSelection = false
         table.columnAutoresizingStyle = .noColumnAutoresizing
-        table.usesAlternatingRowBackgroundColors = false
+        table.usesAlternatingRowBackgroundColors = true
         table.rowHeight = 30
         table.gridStyleMask = []
         table.intercellSpacing = .zero
@@ -174,8 +174,6 @@ struct CSVTableView: NSViewRepresentable {
                 ?? CSVCellView(identifier: identifier)
             let field = cell.editor
             field.stringValue = parent.document.value(row: row, column: column)
-            cell.representsCSVField = parent.document.rows.indices.contains(row)
-                && parent.document.rows[row].indices.contains(column)
             field.tag = row * 100_000 + column
             field.delegate = self
             field.isEditable = false
@@ -442,28 +440,11 @@ private extension Unicode.Scalar.Properties {
 @MainActor
 private final class CSVCellView: NSTableCellView {
     let editor = CSVTextField()
-    var representsCSVField = false {
-        didSet { needsDisplay = true }
-    }
     var isCellSelected = false {
         didSet { needsDisplay = true }
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if representsCSVField {
-            NSColor.controlBackgroundColor.setFill()
-            bounds.fill()
-
-            NSColor.separatorColor.withAlphaComponent(0.72).setStroke()
-            let separators = NSBezierPath()
-            separators.lineWidth = 1
-            separators.move(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.minY))
-            separators.line(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.maxY))
-            separators.move(to: NSPoint(x: bounds.minX, y: bounds.minY + 0.5))
-            separators.line(to: NSPoint(x: bounds.maxX, y: bounds.minY + 0.5))
-            separators.stroke()
-        }
-
         super.draw(dirtyRect)
         guard isCellSelected else { return }
 
