@@ -17,7 +17,8 @@ swift run DonCSV
 - Numbers-style cell interaction: click to select, arrows/Tab to move,
   type to replace, double-click or Return to edit, and Escape to cancel
 - Native alternating row stripes with a non-CSV row-number gutter
-- Double-click column headers to rename them
+- Select a column and use the pencil toolbar action to rename it; header
+  double-click is also supported
 - Shift-click or Shift-arrow to select rectangular cell ranges
 - Copy and paste selected ranges while preserving their row/column pattern
 - Paste tab/newline spreadsheet data; a single value fills a larger selection
