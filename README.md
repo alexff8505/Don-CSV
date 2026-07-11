@@ -16,6 +16,9 @@ swift run DonCSV
 - Columns start wide enough for their content and remain user-resizable
 - Numbers-style cell interaction: click to select, arrows/Tab to move,
   type to replace, double-click or Return to edit, and Escape to cancel
+- Native alternating row stripes with a non-CSV row-number gutter
+- Double-click column headers to rename them
+- Copy and paste selected cells, including tab/newline spreadsheet data
 - Automatic saving after edits
 - External file changes appear within about one second
 - Add and delete rows or columns

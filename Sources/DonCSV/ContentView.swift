@@ -119,6 +119,15 @@ struct CSVTableView: NSViewRepresentable {
         table.selectionHighlightStyle = .none
         table.backgroundColor = .textBackgroundColor
 
+        let headerView = EditableTableHeaderView()
+        headerView.valueHandler = { [weak coordinator = context.coordinator] column in
+            coordinator?.headerValue(for: column) ?? ""
+        }
+        headerView.commitHandler = { [weak coordinator = context.coordinator] column, value in
+            coordinator?.setHeaderValue(value, for: column)
+        }
+        table.headerView = headerView
+
         let scrollView = NSScrollView()
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
@@ -136,6 +145,12 @@ struct CSVTableView: NSViewRepresentable {
         table.clearHandler = { [weak coordinator = context.coordinator] row, column in
             coordinator?.clearCell(row: row, column: column)
         }
+        table.copyHandler = { [weak coordinator = context.coordinator] row, column in
+            coordinator?.copyValue(row: row, column: column) ?? ""
+        }
+        table.pasteHandler = { [weak coordinator = context.coordinator] row, column, text in
+            coordinator?.paste(text, atRow: row, column: column)
+        }
         context.coordinator.rebuildColumns()
         return scrollView
     }
@@ -144,7 +159,7 @@ struct CSVTableView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let table = context.coordinator.tableView else { return }
 
-        if table.numberOfColumns != document.columnCount {
+        if table.numberOfColumns != document.columnCount + 1 {
             context.coordinator.rebuildColumns()
         } else if context.coordinator.lastRevision != document.revision {
             context.coordinator.updateColumnTitlesAndWidths()
@@ -166,7 +181,17 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard let tableColumn,
+            guard let tableColumn else { return nil }
+
+            if tableColumn.identifier.rawValue == "rowNumber" {
+                let identifier = NSUserInterfaceItemIdentifier("RowNumberCell")
+                let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? RowNumberCellView)
+                    ?? RowNumberCellView(identifier: identifier)
+                cell.number = row + 1
+                return cell
+            }
+
+            guard
                   let column = Int(tableColumn.identifier.rawValue.dropFirst()) else { return nil }
 
             let identifier = NSUserInterfaceItemIdentifier("CSVCellContainer")
@@ -188,7 +213,9 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
-            parent.selectedColumn = tableView.tableColumns.firstIndex(of: tableColumn) ?? -1
+            guard let physicalColumn = tableView.tableColumns.firstIndex(of: tableColumn),
+                  physicalColumn > 0 else { return }
+            parent.selectedColumn = physicalColumn - 1
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
@@ -256,7 +283,7 @@ struct CSVTableView: NSViewRepresentable {
                   row >= 0, row < parent.document.rows.count,
                   column >= 0, column < parent.document.columnCount,
                   let cell = tableView.view(
-                    atColumn: column,
+                    atColumn: column + 1,
                     row: row,
                     makeIfNecessary: true
                   ) as? CSVCellView else { return }
@@ -281,12 +308,24 @@ struct CSVTableView: NSViewRepresentable {
             parent.document.setValue("", row: row, column: column)
             lastRevision = parent.document.revision
             if let cell = tableView?.view(
-                atColumn: column,
+                atColumn: column + 1,
                 row: row,
                 makeIfNecessary: true
             ) as? CSVCellView {
                 cell.editor.stringValue = ""
             }
+        }
+
+        func copyValue(row: Int, column: Int) -> String {
+            parent.document.value(row: row, column: column)
+        }
+
+        func paste(_ text: String, atRow row: Int, column: Int) {
+            let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+            var lines = normalized.components(separatedBy: "\n")
+            if lines.last == "" && lines.count > 1 { lines.removeLast() }
+            let values = lines.map { $0.components(separatedBy: "\t") }
+            parent.document.pasteValues(values, startingAtRow: row, column: column)
         }
 
         private func handleCellClick(_ field: CSVTextField, event: NSEvent) -> Bool {
@@ -311,15 +350,35 @@ struct CSVTableView: NSViewRepresentable {
             moveSelection(toRow: row, column: column)
         }
 
+        func headerValue(for column: Int) -> String {
+            parent.document.value(row: 0, column: column)
+        }
+
+        func setHeaderValue(_ value: String, for column: Int) {
+            guard column >= 0, column < parent.document.columnCount else { return }
+            parent.document.setValue(value, row: 0, column: column)
+            lastRevision = parent.document.revision
+            tableView?.tableColumns[column + 1].title = value.isEmpty ? "Column \(column + 1)" : value
+        }
+
         func rebuildColumns() {
             guard let tableView else { return }
             for column in tableView.tableColumns {
                 tableView.removeTableColumn(column)
             }
 
+            let rowNumberColumn = NSTableColumn(identifier: .init("rowNumber"))
+            rowNumberColumn.title = ""
+            rowNumberColumn.minWidth = 38
+            rowNumberColumn.maxWidth = 38
+            rowNumberColumn.width = 38
+            rowNumberColumn.resizingMask = []
+            tableView.addTableColumn(rowNumberColumn)
+
             for index in 0..<parent.document.columnCount {
                 let column = NSTableColumn(identifier: .init("c\(index)"))
                 column.title = title(for: index)
+                column.headerToolTip = "Double-click to rename"
                 column.minWidth = 60
                 column.width = preferredWidth(for: index)
                 column.resizingMask = .userResizingMask
@@ -331,7 +390,7 @@ struct CSVTableView: NSViewRepresentable {
 
         func updateColumnTitlesAndWidths() {
             guard let tableView else { return }
-            for (index, column) in tableView.tableColumns.enumerated() {
+            for (index, column) in tableView.tableColumns.dropFirst().enumerated() {
                 column.title = title(for: index)
                 column.width = max(column.width, preferredWidth(for: index))
             }
@@ -361,26 +420,41 @@ private final class SpreadsheetTableView: NSTableView {
     var selectionHandler: ((Int, Int) -> Void)?
     var editHandler: ((Int, Int, String?) -> Void)?
     var clearHandler: ((Int, Int) -> Void)?
+    var copyHandler: ((Int, Int) -> String)?
+    var pasteHandler: ((Int, Int, String) -> Void)?
     private(set) var selectedCellRow = -1
     private(set) var selectedCellColumn = -1
 
     override var acceptsFirstResponder: Bool { true }
 
     func selectCell(row: Int, column: Int) {
-        guard row >= 0, row < numberOfRows, column >= 0, column < numberOfColumns else { return }
+        guard row >= 0, row < numberOfRows,
+              column >= 0, column < max(numberOfColumns - 1, 0) else { return }
 
         setSelectionAppearance(false, row: selectedCellRow, column: selectedCellColumn)
         selectedCellRow = row
         selectedCellColumn = column
         setSelectionAppearance(true, row: row, column: column)
         scrollRowToVisible(row)
-        scrollColumnToVisible(column)
+        scrollColumnToVisible(column + 1)
         selectionHandler?(row, column)
     }
 
     override func keyDown(with event: NSEvent) {
         if selectedCellRow < 0 || selectedCellColumn < 0 {
             selectCell(row: 0, column: 0)
+        }
+
+        if event.modifierFlags.contains(.command),
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            if key == "c" {
+                copySelection()
+                return
+            }
+            if key == "v" {
+                pasteSelection()
+                return
+            }
         }
 
         let movement: (row: Int, column: Int)? = switch event.keyCode {
@@ -416,24 +490,157 @@ private final class SpreadsheetTableView: NSTableView {
     }
 
     private func moveSelection(rowDelta: Int, columnDelta: Int) {
-        guard numberOfRows > 0, numberOfColumns > 0 else { return }
+        let dataColumnCount = max(numberOfColumns - 1, 0)
+        guard numberOfRows > 0, dataColumnCount > 0 else { return }
         let row = min(max(selectedCellRow + rowDelta, 0), numberOfRows - 1)
-        let column = min(max(selectedCellColumn + columnDelta, 0), numberOfColumns - 1)
+        let column = min(max(selectedCellColumn + columnDelta, 0), dataColumnCount - 1)
         selectCell(row: row, column: column)
     }
 
     private func setSelectionAppearance(_ selected: Bool, row: Int, column: Int) {
         guard row >= 0, column >= 0,
-              let cell = view(atColumn: column, row: row, makeIfNecessary: false) as? CSVCellView else {
+              let cell = view(atColumn: column + 1, row: row, makeIfNecessary: false) as? CSVCellView else {
             return
         }
         cell.isCellSelected = selected
+    }
+
+    @objc func copy(_ sender: Any?) {
+        copySelection()
+    }
+
+    @objc func paste(_ sender: Any?) {
+        pasteSelection()
+    }
+
+    private func copySelection() {
+        guard selectedCellRow >= 0, selectedCellColumn >= 0 else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(
+            copyHandler?(selectedCellRow, selectedCellColumn) ?? "",
+            forType: .string
+        )
+    }
+
+    private func pasteSelection() {
+        guard selectedCellRow >= 0, selectedCellColumn >= 0,
+              let text = NSPasteboard.general.string(forType: .string) else { return }
+        pasteHandler?(selectedCellRow, selectedCellColumn, text)
     }
 }
 
 private extension Unicode.Scalar.Properties {
     var isControl: Bool {
         generalCategory == .control
+    }
+}
+
+@MainActor
+private final class EditableTableHeaderView: NSTableHeaderView, NSTextFieldDelegate {
+    var valueHandler: ((Int) -> String)?
+    var commitHandler: ((Int, String) -> Void)?
+
+    private var activeEditor: NSTextField?
+    private var isCancelling = false
+
+    override func mouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let physicalColumn = column(at: location)
+
+        guard event.clickCount >= 2, physicalColumn > 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        beginEditing(physicalColumn: physicalColumn)
+    }
+
+    private func beginEditing(physicalColumn: Int) {
+        window?.makeFirstResponder(nil)
+        activeEditor?.removeFromSuperview()
+
+        let dataColumn = physicalColumn - 1
+        let editor = NSTextField(frame: headerRect(ofColumn: physicalColumn).insetBy(dx: 3, dy: 2))
+        editor.stringValue = valueHandler?(dataColumn) ?? ""
+        editor.tag = dataColumn
+        editor.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        editor.alignment = .left
+        editor.isBordered = true
+        editor.isBezeled = true
+        editor.bezelStyle = .squareBezel
+        editor.focusRingType = .exterior
+        editor.delegate = self
+        addSubview(editor)
+        activeEditor = editor
+        window?.makeFirstResponder(editor)
+        editor.selectText(nil)
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let editor = notification.object as? NSTextField else { return }
+        if !isCancelling {
+            commitHandler?(editor.tag, editor.stringValue)
+        }
+        isCancelling = false
+        editor.removeFromSuperview()
+        if activeEditor === editor { activeEditor = nil }
+    }
+
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        switch commandSelector {
+        case #selector(NSResponder.insertNewline(_:)):
+            window?.makeFirstResponder(tableView)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            isCancelling = true
+            window?.makeFirstResponder(tableView)
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+@MainActor
+private final class RowNumberCellView: NSTableCellView {
+    private let label = NSTextField(labelWithString: "")
+
+    var number = 0 {
+        didSet { label.stringValue = String(number) }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        label.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        bounds.fill()
+        NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
+        let edge = NSBezierPath()
+        edge.move(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.minY))
+        edge.line(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.maxY))
+        edge.stroke()
+        super.draw(dirtyRect)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
     }
 }
 

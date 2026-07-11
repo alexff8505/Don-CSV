@@ -90,6 +90,31 @@ final class CSVDocument: ObservableObject {
         scheduleSave()
     }
 
+    func pasteValues(_ values: [[String]], startingAtRow startRow: Int, column startColumn: Int) {
+        guard fileURL != nil, startRow >= 0, startColumn >= 0, !values.isEmpty else { return }
+        let pastedWidth = values.map(\.count).max() ?? 0
+        guard pastedWidth > 0 else { return }
+
+        let requiredColumnCount = max(columnCount, startColumn + pastedWidth)
+        while rows.count < startRow + values.count {
+            rows.append(Array(repeating: "", count: requiredColumnCount))
+        }
+
+        for (rowOffset, pastedRow) in values.enumerated() {
+            let rowIndex = startRow + rowOffset
+            while rows[rowIndex].count < requiredColumnCount {
+                rows[rowIndex].append("")
+            }
+            for (columnOffset, value) in pastedRow.enumerated() {
+                rows[rowIndex][startColumn + columnOffset] = value
+            }
+        }
+
+        revision += 1
+        status = "Editing…"
+        scheduleSave()
+    }
+
     func saveNow() {
         saveTask?.cancel()
         guard let url = fileURL else { return }
