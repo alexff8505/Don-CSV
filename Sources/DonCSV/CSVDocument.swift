@@ -9,13 +9,21 @@ final class CSVDocument: ObservableObject {
     @Published private(set) var status = "Open a CSV file to begin"
     @Published private(set) var revision = 0
 
+    let undoManager = UndoManager()
+
+    private static let lastFileKey = "DonCSV.lastFilePath"
     private var lastDigest: SHA256.Digest?
     private var monitor: Timer?
     private var saveTask: Task<Void, Never>?
     private var isSecurityScoped = false
+    private var hasAttemptedRestore = false
 
     var columnCount: Int {
         rows.map(\.count).max() ?? 0
+    }
+
+    var dataRowCount: Int {
+        max(rows.count - 1, 0)
     }
 
     func open() {
@@ -39,10 +47,26 @@ final class CSVDocument: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             apply(data, message: "Loaded \(url.lastPathComponent)")
+            undoManager.removeAllActions()
+            UserDefaults.standard.set(url.path, forKey: Self.lastFileKey)
             startMonitoring()
         } catch {
             status = "Could not open file: \(error.localizedDescription)"
         }
+    }
+
+    func restoreLastFileIfAvailable() {
+        guard !hasAttemptedRestore else { return }
+        hasAttemptedRestore = true
+        guard fileURL == nil,
+              let path = UserDefaults.standard.string(forKey: Self.lastFileKey) else { return }
+
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            UserDefaults.standard.removeObject(forKey: Self.lastFileKey)
+            return
+        }
+        load(url)
     }
 
     func value(row: Int, column: Int) -> String {
@@ -52,42 +76,41 @@ final class CSVDocument: ObservableObject {
 
     func setValue(_ value: String, row: Int, column: Int) {
         guard rows.indices.contains(row) else { return }
-        while rows[row].count <= column { rows[row].append("") }
-        rows[row][column] = value
-        revision += 1
-        status = "Editing…"
-        scheduleSave()
+        mutate(actionName: row == 0 ? "Rename Column" : "Edit Cell") {
+            while rows[row].count <= column { rows[row].append("") }
+            rows[row][column] = value
+        }
     }
 
     func addRow() {
         guard fileURL != nil else { return }
-        rows.append(Array(repeating: "", count: max(columnCount, 1)))
-        revision += 1
-        scheduleSave()
+        mutate(actionName: "Add Row") {
+            rows.append(Array(repeating: "", count: max(columnCount, 1)))
+        }
     }
 
     func addColumn() {
         guard fileURL != nil else { return }
-        if rows.isEmpty { rows = [["Column 1"]] }
-        else { for index in rows.indices { rows[index].append("") } }
-        revision += 1
-        scheduleSave()
+        mutate(actionName: "Add Column") {
+            if rows.isEmpty { rows = [["Column 1"]] }
+            else { for index in rows.indices { rows[index].append("") } }
+        }
     }
 
     func deleteRow(_ index: Int) {
         guard rows.indices.contains(index) else { return }
-        rows.remove(at: index)
-        revision += 1
-        scheduleSave()
+        mutate(actionName: "Delete Row") {
+            rows.remove(at: index)
+        }
     }
 
     func deleteColumn(_ index: Int) {
         guard index >= 0, index < columnCount else { return }
-        for rowIndex in rows.indices where rows[rowIndex].indices.contains(index) {
-            rows[rowIndex].remove(at: index)
+        mutate(actionName: "Delete Column") {
+            for rowIndex in rows.indices where rows[rowIndex].indices.contains(index) {
+                rows[rowIndex].remove(at: index)
+            }
         }
-        revision += 1
-        scheduleSave()
     }
 
     func pasteValues(
@@ -101,29 +124,27 @@ final class CSVDocument: ObservableObject {
         let pastedWidth = values.map(\.count).max() ?? 0
         guard pastedWidth > 0 else { return }
 
-        let targetHeight = max(values.count, selectedRowCount)
-        let targetWidth = max(pastedWidth, selectedColumnCount)
-        let requiredColumnCount = max(columnCount, startColumn + targetWidth)
-        while rows.count < startRow + targetHeight {
-            rows.append(Array(repeating: "", count: requiredColumnCount))
-        }
-
-        for rowOffset in 0..<targetHeight {
-            let rowIndex = startRow + rowOffset
-            while rows[rowIndex].count < requiredColumnCount {
-                rows[rowIndex].append("")
+        mutate(actionName: "Paste Cells") {
+            let targetHeight = max(values.count, selectedRowCount)
+            let targetWidth = max(pastedWidth, selectedColumnCount)
+            let requiredColumnCount = max(columnCount, startColumn + targetWidth)
+            while rows.count < startRow + targetHeight {
+                rows.append(Array(repeating: "", count: requiredColumnCount))
             }
-            let pastedRow = values[rowOffset % values.count]
-            for columnOffset in 0..<targetWidth {
-                let sourceColumn = columnOffset % pastedWidth
-                let value = pastedRow.indices.contains(sourceColumn) ? pastedRow[sourceColumn] : ""
-                rows[rowIndex][startColumn + columnOffset] = value
+
+            for rowOffset in 0..<targetHeight {
+                let rowIndex = startRow + rowOffset
+                while rows[rowIndex].count < requiredColumnCount {
+                    rows[rowIndex].append("")
+                }
+                let pastedRow = values[rowOffset % values.count]
+                for columnOffset in 0..<targetWidth {
+                    let sourceColumn = columnOffset % pastedWidth
+                    let value = pastedRow.indices.contains(sourceColumn) ? pastedRow[sourceColumn] : ""
+                    rows[rowIndex][startColumn + columnOffset] = value
+                }
             }
         }
-
-        revision += 1
-        status = "Editing…"
-        scheduleSave()
     }
 
     func saveNow() {
@@ -149,6 +170,34 @@ final class CSVDocument: ObservableObject {
         }
     }
 
+    private func mutate(actionName: String, change: () -> Void) {
+        let previousRows = rows
+        change()
+        guard rows != previousRows else { return }
+        registerUndo(restoring: previousRows, actionName: actionName)
+        documentDidChange()
+    }
+
+    private func registerUndo(restoring snapshot: [[String]], actionName: String) {
+        undoManager.registerUndo(withTarget: self) { target in
+            target.restoreRows(snapshot, actionName: actionName)
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    private func restoreRows(_ snapshot: [[String]], actionName: String) {
+        let currentRows = rows
+        rows = snapshot
+        registerUndo(restoring: currentRows, actionName: actionName)
+        documentDidChange()
+    }
+
+    private func documentDidChange() {
+        revision += 1
+        status = "Editing…"
+        scheduleSave()
+    }
+
     private func apply(_ data: Data, message: String) {
         let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .windowsCP1252)
@@ -171,5 +220,6 @@ final class CSVDocument: ObservableObject {
         guard digest != lastDigest else { return }
         saveTask?.cancel()
         apply(data, message: "Updated from disk \(Date.now.formatted(date: .omitted, time: .shortened))")
+        undoManager.removeAllActions()
     }
 }

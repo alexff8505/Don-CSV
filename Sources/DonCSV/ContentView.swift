@@ -25,6 +25,7 @@ struct ContentView: View {
                     selectedRow: $selectedRow,
                     selectedColumn: $selectedColumn
                 )
+                .id(document.fileURL)
             }
 
             Divider()
@@ -37,7 +38,7 @@ struct ContentView: View {
                 Spacer()
 
                 if document.fileURL != nil {
-                    Text("\(document.rows.count) rows  •  \(document.columnCount) columns")
+                    Text("\(max(document.rows.count - 1, 0)) data rows  •  \(document.columnCount) columns")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -73,24 +74,28 @@ struct ContentView: View {
                 Button { renameSelectedColumn() } label: {
                     Label("Rename Column", systemImage: "pencil")
                 }
-                .disabled(selectedColumn < 0)
+                .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
 
                 Button {
-                    if selectedRow >= 0 { document.deleteRow(selectedRow); selectedRow = -1 }
+                    if selectedRow >= 0 { document.deleteRow(selectedRow + 1); selectedRow = -1 }
                 } label: {
                     Label("Delete Row", systemImage: "minus")
                 }
-                .disabled(selectedRow < 0)
+                .disabled(selectedRow < 0 || selectedRow >= document.dataRowCount)
 
                 Button {
                     if selectedColumn >= 0 { document.deleteColumn(selectedColumn); selectedColumn = -1 }
                 } label: {
                     Label("Delete Column", systemImage: "rectangle.split.1x2")
                 }
-                .disabled(selectedColumn < 0)
+                .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
             }
         }
         .navigationTitle(document.fileURL?.lastPathComponent ?? "Don CSV")
+        .onChange(of: document.fileURL) {
+            selectedRow = -1
+            selectedColumn = -1
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -144,14 +149,7 @@ struct CSVTableView: NSViewRepresentable {
         table.selectionHighlightStyle = .none
         table.backgroundColor = .textBackgroundColor
 
-        let headerView = EditableTableHeaderView()
-        headerView.valueHandler = { [weak coordinator = context.coordinator] column in
-            coordinator?.headerValue(for: column) ?? ""
-        }
-        headerView.commitHandler = { [weak coordinator = context.coordinator] column, value in
-            coordinator?.setHeaderValue(value, for: column)
-        }
-        table.headerView = headerView
+        table.headerView = NSTableHeaderView()
 
         let scrollView = NSScrollView()
         scrollView.documentView = table
@@ -202,7 +200,7 @@ struct CSVTableView: NSViewRepresentable {
         init(_ parent: CSVTableView) { self.parent = parent }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            parent.document.rows.count
+            max(parent.document.rows.count - 1, 0)
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -212,7 +210,7 @@ struct CSVTableView: NSViewRepresentable {
                 let identifier = NSUserInterfaceItemIdentifier("RowNumberCell")
                 let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? RowNumberCellView)
                     ?? RowNumberCellView(identifier: identifier)
-                cell.number = row + 1
+                cell.number = row + 2
                 cell.isRangeSelected = (tableView as? SpreadsheetTableView)?.rowIsSelected(row) ?? false
                 return cell
             }
@@ -224,7 +222,7 @@ struct CSVTableView: NSViewRepresentable {
             let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? CSVCellView)
                 ?? CSVCellView(identifier: identifier)
             let field = cell.editor
-            field.stringValue = parent.document.value(row: row, column: column)
+            field.stringValue = parent.document.value(row: row + 1, column: column)
             field.tag = row * 100_000 + column
             field.delegate = self
             field.isEditable = false
@@ -240,7 +238,11 @@ struct CSVTableView: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
             guard let physicalColumn = tableView.tableColumns.firstIndex(of: tableColumn),
                   physicalColumn > 0 else { return }
-            parent.selectedColumn = physicalColumn - 1
+            let dataColumn = physicalColumn - 1
+            parent.selectedColumn = dataColumn
+            DispatchQueue.main.async { [weak self] in
+                self?.promptToRenameHeader(dataColumn)
+            }
         }
 
         func controlTextDidEndEditing(_ notification: Notification) {
@@ -256,7 +258,7 @@ struct CSVTableView: NSViewRepresentable {
 
             let row = field.tag / 100_000
             let column = field.tag % 100_000
-            parent.document.setValue(field.stringValue, row: row, column: column)
+            parent.document.setValue(field.stringValue, row: row + 1, column: column)
             lastRevision = parent.document.revision
         }
 
@@ -291,7 +293,7 @@ struct CSVTableView: NSViewRepresentable {
 
         private func moveSelection(toRow row: Int, column: Int) {
             guard let tableView = tableView as? SpreadsheetTableView,
-                  row >= 0, row < parent.document.rows.count,
+                  row >= 0, row < max(parent.document.rows.count - 1, 0),
                   column >= 0, column < parent.document.columnCount else { return }
 
             tableView.selectCell(row: row, column: column)
@@ -305,7 +307,7 @@ struct CSVTableView: NSViewRepresentable {
 
         func beginEditing(row: Int, column: Int, replacement: String?) {
             guard let tableView = tableView as? SpreadsheetTableView,
-                  row >= 0, row < parent.document.rows.count,
+                  row >= 0, row < max(parent.document.rows.count - 1, 0),
                   column >= 0, column < parent.document.columnCount,
                   let cell = tableView.view(
                     atColumn: column + 1,
@@ -315,7 +317,7 @@ struct CSVTableView: NSViewRepresentable {
 
             tableView.selectCell(row: row, column: column)
             let field = cell.editor
-            field.originalValue = parent.document.value(row: row, column: column)
+            field.originalValue = parent.document.value(row: row + 1, column: column)
             field.isEditable = true
             field.isSelectable = true
 
@@ -332,7 +334,7 @@ struct CSVTableView: NSViewRepresentable {
         func clearCells(rows: ClosedRange<Int>, columns: ClosedRange<Int>) {
             parent.document.pasteValues(
                 [[""]],
-                startingAtRow: rows.lowerBound,
+                startingAtRow: rows.lowerBound + 1,
                 column: columns.lowerBound,
                 selectedRowCount: rows.count,
                 selectedColumnCount: columns.count
@@ -342,7 +344,7 @@ struct CSVTableView: NSViewRepresentable {
         func copyValues(rows: ClosedRange<Int>, columns: ClosedRange<Int>) -> String {
             let values = rows.map { row in
                 columns.map { column in
-                    parent.document.value(row: row, column: column)
+                    parent.document.value(row: row + 1, column: column)
                 }
             }
             return ClipboardGrid.encode(values)
@@ -356,7 +358,7 @@ struct CSVTableView: NSViewRepresentable {
             let values = ClipboardGrid.decode(text)
             parent.document.pasteValues(
                 values,
-                startingAtRow: rows.lowerBound,
+                startingAtRow: rows.lowerBound + 1,
                 column: columns.lowerBound,
                 selectedRowCount: rows.count,
                 selectedColumnCount: columns.count
@@ -374,7 +376,7 @@ struct CSVTableView: NSViewRepresentable {
             )
 
             if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
-                field.originalValue = parent.document.value(row: row, column: column)
+                field.originalValue = parent.document.value(row: row + 1, column: column)
                 field.isEditable = true
                 field.isSelectable = true
                 return true
@@ -389,15 +391,31 @@ struct CSVTableView: NSViewRepresentable {
             moveSelection(toRow: row, column: column)
         }
 
-        func headerValue(for column: Int) -> String {
-            parent.document.value(row: 0, column: column)
-        }
-
         func setHeaderValue(_ value: String, for column: Int) {
             guard column >= 0, column < parent.document.columnCount else { return }
             parent.document.setValue(value, row: 0, column: column)
             lastRevision = parent.document.revision
             tableView?.tableColumns[column + 1].title = value.isEmpty ? "Column \(column + 1)" : value
+        }
+
+        private func promptToRenameHeader(_ column: Int) {
+            guard column >= 0, column < parent.document.columnCount else { return }
+
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+            input.stringValue = parent.document.value(row: 0, column: column)
+            input.placeholderString = "Column \(column + 1)"
+
+            let alert = NSAlert()
+            alert.messageText = "Rename Column"
+            alert.informativeText = "Enter the name for column \(column + 1)."
+            alert.alertStyle = .informational
+            alert.accessoryView = input
+            alert.addButton(withTitle: "Rename")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = input
+
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            setHeaderValue(input.stringValue, for: column)
         }
 
         func rebuildColumns() {
@@ -417,7 +435,7 @@ struct CSVTableView: NSViewRepresentable {
             for index in 0..<parent.document.columnCount {
                 let column = NSTableColumn(identifier: .init("c\(index)"))
                 column.title = title(for: index)
-                column.headerToolTip = "Double-click to rename"
+                column.headerToolTip = "Click to rename"
                 column.minWidth = 60
                 column.width = preferredWidth(for: index)
                 column.resizingMask = .userResizingMask
@@ -669,87 +687,6 @@ private final class SpreadsheetTableView: NSTableView {
 private extension Unicode.Scalar.Properties {
     var isControl: Bool {
         generalCategory == .control
-    }
-}
-
-@MainActor
-private final class EditableTableHeaderView: NSTableHeaderView, NSTextFieldDelegate {
-    var valueHandler: ((Int) -> String)?
-    var commitHandler: ((Int, String) -> Void)?
-
-    private var activeEditor: NSTextField?
-    private var isCancelling = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        installDoubleClickRecognizer()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        installDoubleClickRecognizer()
-    }
-
-    private func installDoubleClickRecognizer() {
-        let recognizer = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
-        recognizer.numberOfClicksRequired = 2
-        recognizer.buttonMask = 0x1
-        addGestureRecognizer(recognizer)
-    }
-
-    @objc private func handleDoubleClick(_ recognizer: NSClickGestureRecognizer) {
-        let physicalColumn = column(at: recognizer.location(in: self))
-        guard physicalColumn > 0 else { return }
-        beginEditing(physicalColumn: physicalColumn)
-    }
-
-    private func beginEditing(physicalColumn: Int) {
-        window?.makeFirstResponder(nil)
-        activeEditor?.removeFromSuperview()
-
-        let dataColumn = physicalColumn - 1
-        let editor = NSTextField(frame: headerRect(ofColumn: physicalColumn).insetBy(dx: 3, dy: 2))
-        editor.stringValue = valueHandler?(dataColumn) ?? ""
-        editor.tag = dataColumn
-        editor.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        editor.alignment = .left
-        editor.isBordered = true
-        editor.isBezeled = true
-        editor.bezelStyle = .squareBezel
-        editor.focusRingType = .exterior
-        editor.delegate = self
-        addSubview(editor)
-        activeEditor = editor
-        window?.makeFirstResponder(editor)
-        editor.selectText(nil)
-    }
-
-    func controlTextDidEndEditing(_ notification: Notification) {
-        guard let editor = notification.object as? NSTextField else { return }
-        if !isCancelling {
-            commitHandler?(editor.tag, editor.stringValue)
-        }
-        isCancelling = false
-        editor.removeFromSuperview()
-        if activeEditor === editor { activeEditor = nil }
-    }
-
-    func control(
-        _ control: NSControl,
-        textView: NSTextView,
-        doCommandBy commandSelector: Selector
-    ) -> Bool {
-        switch commandSelector {
-        case #selector(NSResponder.insertNewline(_:)):
-            window?.makeFirstResponder(tableView)
-            return true
-        case #selector(NSResponder.cancelOperation(_:)):
-            isCancelling = true
-            window?.makeFirstResponder(tableView)
-            return true
-        default:
-            return false
-        }
     }
 }
 
