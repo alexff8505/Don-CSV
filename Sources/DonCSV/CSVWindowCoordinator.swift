@@ -14,6 +14,9 @@ final class CSVWindowCoordinator: ObservableObject {
     private var documents: [UUID: CSVDocument] = [:]
     private var windows: [UUID: WeakWindow] = [:]
     private var pendingTabParents: [UUID: WeakWindow] = [:]
+    private var separateWindowSessions: Set<UUID> = []
+    private var lastActiveWindow: WeakWindow?
+    private var handledExternalOpenRequests: Set<UUID> = []
     private var didAttemptInitialRestore = false
 
     func document(for sessionID: UUID) -> CSVDocument {
@@ -92,6 +95,7 @@ final class CSVWindowCoordinator: ObservableObject {
     func openNewWindow(openSession: (UUID) -> Void) {
         let sessionID = UUID()
         documents[sessionID] = CSVDocument()
+        separateWindowSessions.insert(sessionID)
         openSession(sessionID)
     }
 
@@ -106,27 +110,66 @@ final class CSVWindowCoordinator: ObservableObject {
     }
 
     func activeSessionID() -> UUID? {
-        guard let keyWindow = NSApp.keyWindow else { return nil }
-        return windows.first(where: { $0.value.value === keyWindow })?.key
+        if let keyWindow = NSApp.keyWindow,
+           let sessionID = windows.first(where: { $0.value.value === keyWindow })?.key {
+            return sessionID
+        }
+        guard let lastActiveWindow = lastActiveWindow?.value else { return nil }
+        return windows.first(where: { $0.value.value === lastActiveWindow })?.key
+    }
+
+    func activeDocument() -> CSVDocument? {
+        activeSessionID().flatMap { documents[$0] }
+    }
+
+    func handleExternalOpen(
+        requestID: UUID,
+        urls: [URL],
+        openSession: (UUID) -> Void
+    ) {
+        if handledExternalOpenRequests.count >= 256 {
+            handledExternalOpenRequests.removeAll(keepingCapacity: true)
+        }
+        guard handledExternalOpenRequests.insert(requestID).inserted else { return }
+        open(urls, from: activeSessionID(), openSession: openSession)
     }
 
     func register(window: NSWindow, for sessionID: UUID) {
+        let defaultParent = lastActiveWindow?.value
+            ?? windows.values.compactMap(\.value).first
         windows[sessionID] = WeakWindow(window)
         window.tabbingIdentifier = "com.alexfraser.DonCSV.document"
         window.tabbingMode = .preferred
 
-        guard let parent = pendingTabParents.removeValue(forKey: sessionID)?.value,
-              parent !== window else { return }
+        if separateWindowSessions.contains(sessionID) {
+            lastActiveWindow = WeakWindow(window)
+            return
+        }
+
+        let parent = pendingTabParents.removeValue(forKey: sessionID)?.value ?? defaultParent
+        guard let parent, parent !== window else {
+            lastActiveWindow = WeakWindow(window)
+            return
+        }
 
         parent.addTabbedWindow(window, ordered: .above)
         window.tabGroup?.selectedWindow = window
         window.makeKeyAndOrderFront(nil)
+        lastActiveWindow = WeakWindow(window)
+    }
+
+    func activate(window: NSWindow) {
+        lastActiveWindow = WeakWindow(window)
     }
 
     func unregister(window: NSWindow, for sessionID: UUID) {
         guard windows[sessionID]?.value === window else { return }
         windows.removeValue(forKey: sessionID)
         pendingTabParents.removeValue(forKey: sessionID)
+        separateWindowSessions.remove(sessionID)
+        if lastActiveWindow?.value === window {
+            lastActiveWindow = windows.values.first(where: { $0.value != nil })
+        }
         documents.removeValue(forKey: sessionID)?.close()
     }
 
@@ -149,30 +192,16 @@ final class CSVWindowCoordinator: ObservableObject {
     }
 }
 
-private struct FocusedCSVDocumentKey: FocusedValueKey {
-    typealias Value = CSVDocument
-}
-
-extension FocusedValues {
-    var csvDocument: CSVDocument? {
-        get { self[FocusedCSVDocumentKey.self] }
-        set { self[FocusedCSVDocumentKey.self] = newValue }
-    }
-}
-
 struct CSVAppCommands: Commands {
     @ObservedObject var coordinator: CSVWindowCoordinator
     @Environment(\.openWindow) private var openWindow
-    @FocusedValue(\.csvDocument) private var document
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
-            Button("Undo") { document?.undoManager.undo() }
+            Button("Undo") { coordinator.activeDocument()?.undoManager.undo() }
                 .keyboardShortcut("z")
-                .disabled(document?.undoManager.canUndo != true)
-            Button("Redo") { document?.undoManager.redo() }
+            Button("Redo") { coordinator.activeDocument()?.undoManager.redo() }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(document?.undoManager.canRedo != true)
         }
 
         CommandGroup(replacing: .newItem) {
@@ -197,19 +226,15 @@ struct CSVAppCommands: Commands {
             }
             .keyboardShortcut("o")
 
-            Button("Save") { document?.saveNow() }
+            Button("Save") { coordinator.activeDocument()?.saveNow() }
                 .keyboardShortcut("s")
-                .disabled(document?.fileURL == nil)
         }
 
         CommandMenu("Table") {
-            Button("Add Row") { document?.addRow() }
+            Button("Add Row") { coordinator.activeDocument()?.addRow() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(document?.fileURL == nil)
-            Button("Add Column") { document?.addColumn() }
+            Button("Add Column") { coordinator.activeDocument()?.addColumn() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
-                .disabled(document?.fileURL == nil)
         }
     }
 }
-

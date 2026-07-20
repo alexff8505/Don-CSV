@@ -16,13 +16,21 @@ export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT/.build/ModuleCa
 export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-$ROOT/.build/SwiftPMModuleCache}"
 
 cd "$ROOT"
+killall DonCSV 2>/dev/null || true
+for _ in {1..50}; do
+    if ! killall -0 DonCSV 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
 swift build -c release --disable-sandbox
 
-killall DonCSV 2>/dev/null || true
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/DonCSV "$APP/Contents/MacOS/DonCSV"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/DonCSVIcon-1024.png "$APP/Contents/Resources/DonCSVIcon-1024.png"
 xattr -cr "$APP"
 codesign --force --sign - "$APP"
+touch "$APP"
+sleep 0.25
 open "$APP"

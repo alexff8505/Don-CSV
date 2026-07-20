@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct DonCSVApp: App {
     @StateObject private var coordinator = CSVWindowCoordinator()
+    @NSApplicationDelegateAdaptor(DonCSVAppDelegate.self) private var appDelegate
 
     init() {
         // Don CSV groups files explicitly so Open/New Tab are predictable while
@@ -17,9 +18,13 @@ struct DonCSVApp: App {
 
     var body: some Scene {
         WindowGroup("Don CSV", for: UUID.self) { $requestedSessionID in
-            CSVSessionScene(requestedSessionID: requestedSessionID)
+            CSVSessionScene(
+                requestedSessionID: requestedSessionID,
+                appDelegate: appDelegate
+            )
                 .environmentObject(coordinator)
         }
+        .handlesExternalEvents(matching: [])
         .windowStyle(.automatic)
         .commands {
             CSVAppCommands(coordinator: coordinator)
@@ -27,8 +32,43 @@ struct DonCSVApp: App {
     }
 }
 
+@MainActor
+private final class DonCSVAppDelegate: NSObject, NSApplicationDelegate {
+    static let openURLsNotification = Notification.Name("DonCSV.openURLs")
+
+    private var pendingRequests: [CSVOpenRequest] = []
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let request = CSVOpenRequest(urls: urls)
+        pendingRequests.append(request)
+        NotificationCenter.default.post(
+            name: Self.openURLsNotification,
+            object: request
+        )
+    }
+
+    func takePendingOpenRequests() -> [CSVOpenRequest] {
+        defer { pendingRequests.removeAll() }
+        return pendingRequests
+    }
+
+    func markOpenRequestHandled(_ requestID: UUID) {
+        pendingRequests.removeAll { $0.id == requestID }
+    }
+}
+
+private final class CSVOpenRequest: NSObject {
+    let id = UUID()
+    let urls: [URL]
+
+    init(urls: [URL]) {
+        self.urls = urls
+    }
+}
+
 private struct CSVSessionScene: View {
     let requestedSessionID: UUID?
+    let appDelegate: DonCSVAppDelegate
 
     @EnvironmentObject private var coordinator: CSVWindowCoordinator
     @Environment(\.openWindow) private var openWindow
@@ -60,33 +100,47 @@ private struct CSVSessionScene: View {
             WindowSessionAccessor(
                 sessionID: sessionID,
                 register: { coordinator.register(window: $0, for: sessionID) },
+                activate: { coordinator.activate(window: $0) },
                 unregister: { coordinator.unregister(window: $0, for: sessionID) }
             )
         )
-        .focusedSceneValue(\.csvDocument, document)
-        .onAppear { coordinator.restoreInitialFileIfNeeded(into: document) }
-        .onOpenURL { url in
-            coordinator.open([url], from: sessionID) {
-                openWindow(value: $0)
+        .onAppear {
+            coordinator.restoreInitialFileIfNeeded(into: document)
+            for request in appDelegate.takePendingOpenRequests() {
+                handleExternalOpen(request)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: DonCSVAppDelegate.openURLsNotification)) {
+            guard let request = $0.object as? CSVOpenRequest else { return }
+            handleExternalOpen(request)
+        }
+    }
+
+    private func handleExternalOpen(_ request: CSVOpenRequest) {
+        coordinator.handleExternalOpen(requestID: request.id, urls: request.urls) {
+            openWindow(value: $0)
+        }
+        appDelegate.markOpenRequestHandled(request.id)
     }
 }
 
 private struct WindowSessionAccessor: NSViewRepresentable {
     let sessionID: UUID
     let register: (NSWindow) -> Void
+    let activate: (NSWindow) -> Void
     let unregister: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> WindowSessionView {
         let view = WindowSessionView()
         view.register = register
+        view.activate = activate
         view.unregister = unregister
         return view
     }
 
     func updateNSView(_ nsView: WindowSessionView, context: Context) {
         nsView.register = register
+        nsView.activate = activate
         nsView.unregister = unregister
         nsView.registerCurrentWindowIfNeeded()
     }
@@ -94,6 +148,7 @@ private struct WindowSessionAccessor: NSViewRepresentable {
 
 private final class WindowSessionView: NSView {
     var register: ((NSWindow) -> Void)?
+    var activate: ((NSWindow) -> Void)?
     var unregister: ((NSWindow) -> Void)?
     private weak var registeredWindow: NSWindow?
 
@@ -110,6 +165,11 @@ private final class WindowSessionView: NSView {
                 name: NSWindow.willCloseNotification,
                 object: registeredWindow
             )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.didBecomeKeyNotification,
+                object: registeredWindow
+            )
         }
 
         registeredWindow = window
@@ -120,6 +180,20 @@ private final class WindowSessionView: NSView {
             name: NSWindow.willCloseNotification,
             object: window
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
+            object: window
+        )
+        if window.isKeyWindow {
+            activate?(window)
+        }
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        activate?(window)
     }
 
     @objc private func windowWillClose(_ notification: Notification) {
