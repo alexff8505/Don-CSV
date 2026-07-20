@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var document: CSVDocument
+    let openFiles: () -> Void
+    let openURLs: ([URL]) -> Void
     @State private var selectedRow = -1
     @State private var selectedColumn = -1
 
@@ -15,7 +17,7 @@ struct ContentView: View {
                 } description: {
                     Text("Open a comma-separated values file to view and edit it.")
                 } actions: {
-                    Button("Open CSV…") { document.open() }
+                    Button("Open CSV…") { openFiles() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                 }
@@ -50,7 +52,7 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                Button { document.open() } label: {
+                Button { openFiles() } label: {
                     Label("Open", systemImage: "folder")
                 }
 
@@ -97,10 +99,12 @@ struct ContentView: View {
             selectedColumn = -1
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in document.load(url) }
+            guard !providers.isEmpty else { return false }
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in openURLs([url]) }
+                }
             }
             return true
         }
@@ -754,6 +758,12 @@ private final class CSVCellView: NSTableCellView {
         let outline = NSBezierPath(rect: bounds.insetBy(dx: 1, dy: 1))
         outline.lineWidth = 2
         outline.stroke()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if editor.activationHandler?(editor, event) == true {
+            editor.selectText(nil)
+        }
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {

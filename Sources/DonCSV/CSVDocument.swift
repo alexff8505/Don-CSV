@@ -26,32 +26,25 @@ final class CSVDocument: ObservableObject {
         max(rows.count - 1, 0)
     }
 
-    func open() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.message = "Choose a CSV file to edit"
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        load(url)
-    }
-
-    func load(_ url: URL) {
-        monitor?.invalidate()
-        if isSecurityScoped { fileURL?.stopAccessingSecurityScopedResource() }
-
-        fileURL = url
-        isSecurityScoped = url.startAccessingSecurityScopedResource()
-
+    @discardableResult
+    func load(_ url: URL) -> Bool {
+        let newSecurityScope = url.startAccessingSecurityScopedResource()
         do {
             let data = try Data(contentsOf: url)
+            monitor?.invalidate()
+            if isSecurityScoped { fileURL?.stopAccessingSecurityScopedResource() }
+
+            fileURL = url
+            isSecurityScoped = newSecurityScope
             apply(data, message: "Loaded \(url.lastPathComponent)")
             undoManager.removeAllActions()
             UserDefaults.standard.set(url.path, forKey: Self.lastFileKey)
             startMonitoring()
+            return true
         } catch {
+            if newSecurityScope { url.stopAccessingSecurityScopedResource() }
             status = "Could not open file: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -67,6 +60,14 @@ final class CSVDocument: ObservableObject {
             return
         }
         load(url)
+    }
+
+    func close() {
+        saveTask?.cancel()
+        monitor?.invalidate()
+        monitor = nil
+        if isSecurityScoped { fileURL?.stopAccessingSecurityScopedResource() }
+        isSecurityScoped = false
     }
 
     func value(row: Int, column: Int) -> String {
@@ -180,7 +181,9 @@ final class CSVDocument: ObservableObject {
 
     private func registerUndo(restoring snapshot: [[String]], actionName: String) {
         undoManager.registerUndo(withTarget: self) { target in
-            target.restoreRows(snapshot, actionName: actionName)
+            MainActor.assumeIsolated {
+                target.restoreRows(snapshot, actionName: actionName)
+            }
         }
         undoManager.setActionName(actionName)
     }

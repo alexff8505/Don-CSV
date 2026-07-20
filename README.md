@@ -13,8 +13,10 @@ swift run DonCSV
 ## Features
 
 - Native, editable macOS table
+- Open several CSV files at once in native tabs, with support for separate windows
+- New files open in tabs by default; reopening an open file focuses its existing tab
 - Columns start wide enough for their content and remain user-resizable
-- Numbers-style cell interaction: click to select, arrows/Tab to move,
+- Full-cell single-click targets with Numbers-style interaction: click to select, arrows/Tab to move,
   type to replace, double-click or Return to edit, and Escape to cancel
 - Native alternating row stripes with a non-CSV row-number gutter
 - Click a column header to rename it, or select a cell and use the pencil toolbar action
