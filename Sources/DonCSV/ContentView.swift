@@ -152,6 +152,7 @@ struct CSVTableView: NSViewRepresentable {
         table.intercellSpacing = .zero
         table.selectionHighlightStyle = .none
         table.backgroundColor = .textBackgroundColor
+        table.style = .plain
 
         let header = SpreadsheetHeaderView()
         header.renameHandler = { [weak coordinator = context.coordinator] column in
@@ -515,6 +516,7 @@ struct CSVTableView: NSViewRepresentable {
 
         func rebuildColumns() {
             guard let tableView else { return }
+            let headerFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             sortColumn = nil
             sortAscending = false
             for column in tableView.tableColumns {
@@ -523,6 +525,7 @@ struct CSVTableView: NSViewRepresentable {
 
             let rowNumberColumn = NSTableColumn(identifier: .init("rowNumber"))
             rowNumberColumn.title = "#"
+            rowNumberColumn.headerCell.font = headerFont
             rowNumberColumn.headerToolTip = "Restore original row order"
             rowNumberColumn.minWidth = 38
             rowNumberColumn.maxWidth = 38
@@ -533,6 +536,7 @@ struct CSVTableView: NSViewRepresentable {
             for index in 0..<parent.document.columnCount {
                 let column = NSTableColumn(identifier: .init("c\(index)"))
                 column.title = title(for: index)
+                column.headerCell.font = headerFont
                 column.headerToolTip = "Click to sort; right-click to rename"
                 column.minWidth = 60
                 column.width = preferredWidth(for: index)
