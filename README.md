@@ -24,6 +24,7 @@ swift run DonCSV
 - Click a column header to alternate descending/ascending sort; click `#` to restore file order
 - Right-click a column header to rename it, or select a cell and use the pencil toolbar action
 - Use the native right-hand Columns sidebar to show or hide individual columns without changing the CSV
+- Filter rows from the same sidebar by choosing a column and typing a case-insensitive search
 - Shift-click or Shift-arrow to select rectangular cell ranges
 - Copy and paste selected ranges while preserving their row/column pattern
 - Paste tab/newline spreadsheet data; a single value fills a larger selection

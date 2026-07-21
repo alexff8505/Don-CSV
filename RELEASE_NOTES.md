@@ -16,6 +16,7 @@
 - Click the `#` row-number heading to return to the CSV's original order.
 - Right-click a column heading to rename it.
 - Show or hide individual columns from the native right-hand Columns sidebar without changing the CSV.
+- Filter rows live by selecting a column and typing a case-insensitive search in the same sidebar.
 - Improved column-heading sizing, row-number alignment, and table-edge spacing.
 
 ### Live files and autosave

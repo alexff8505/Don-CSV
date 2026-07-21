@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var selectedColumn = -1
     @State private var hiddenColumns: Set<Int> = []
     @State private var isColumnInspectorPresented = false
+    @State private var filterColumn = 0
+    @State private var filterText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +30,9 @@ struct ContentView: View {
                     document: document,
                     selectedRow: $selectedRow,
                     selectedColumn: $selectedColumn,
-                    hiddenColumns: hiddenColumns
+                    hiddenColumns: hiddenColumns,
+                    filterColumn: document.columnCount > 0 ? filterColumn : nil,
+                    filterText: filterText
                 )
                 .id(document.fileURL)
             }
@@ -109,7 +113,9 @@ struct ContentView: View {
         .inspector(isPresented: $isColumnInspectorPresented) {
             ColumnVisibilityInspector(
                 document: document,
-                hiddenColumns: $hiddenColumns
+                hiddenColumns: $hiddenColumns,
+                filterColumn: $filterColumn,
+                filterText: $filterText
             )
             .inspectorColumnWidth(min: 210, ideal: 240, max: 320)
         }
@@ -118,12 +124,20 @@ struct ContentView: View {
             selectedRow = -1
             selectedColumn = -1
             hiddenColumns.removeAll()
+            filterColumn = 0
+            filterText = ""
             if document.fileURL == nil {
                 isColumnInspectorPresented = false
             }
         }
         .onChange(of: document.columnCount) {
             hiddenColumns = hiddenColumns.filter { $0 < document.columnCount }
+            if document.columnCount == 0 {
+                filterColumn = 0
+                filterText = ""
+            } else if filterColumn >= document.columnCount {
+                filterColumn = document.columnCount - 1
+            }
             if hiddenColumns.contains(selectedColumn) {
                 selectedColumn = -1
             }
@@ -166,9 +180,46 @@ struct ContentView: View {
 private struct ColumnVisibilityInspector: View {
     @ObservedObject var document: CSVDocument
     @Binding var hiddenColumns: Set<Int>
+    @Binding var filterColumn: Int
+    @Binding var filterText: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Filter")
+                .font(.headline)
+
+            if document.columnCount > 0 {
+                Picker("Column", selection: $filterColumn) {
+                    ForEach(0..<document.columnCount, id: \.self) { column in
+                        Text(title(for: column)).tag(column)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                HStack(spacing: 6) {
+                    TextField("Filter rows…", text: $filterText)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button {
+                        filterText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Clear filter")
+                    .disabled(filterText.isEmpty)
+                }
+
+                if !filterText.isEmpty {
+                    Text("\(matchingRowCount) of \(document.dataRowCount) rows")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
             HStack {
                 Text("Columns")
                     .font(.headline)
@@ -219,6 +270,19 @@ private struct ColumnVisibilityInspector: View {
         let heading = document.value(row: 0, column: column)
         return heading.isEmpty ? "Column \(column + 1)" : heading
     }
+
+    private var matchingRowCount: Int {
+        let query = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, filterColumn < document.columnCount else {
+            return document.dataRowCount
+        }
+        return document.rows.indices.dropFirst().filter { row in
+            document.value(row: row, column: filterColumn).range(
+                of: query,
+                options: [.caseInsensitive, .diacriticInsensitive]
+            ) != nil
+        }.count
+    }
 }
 
 @MainActor
@@ -248,6 +312,8 @@ struct CSVTableView: NSViewRepresentable {
     @Binding var selectedRow: Int
     @Binding var selectedColumn: Int
     let hiddenColumns: Set<Int>
+    let filterColumn: Int?
+    let filterText: String
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -313,6 +379,11 @@ struct CSVTableView: NSViewRepresentable {
             context.coordinator.updateColumnVisibility()
         }
 
+        if context.coordinator.lastFilterColumn != filterColumn
+            || context.coordinator.lastFilterText != filterText {
+            context.coordinator.reloadForFilterChange()
+        }
+
         if context.coordinator.lastRevision != document.revision {
             context.coordinator.refreshDisplayedRows()
             context.coordinator.updateColumnTitlesAndWidths()
@@ -328,6 +399,8 @@ struct CSVTableView: NSViewRepresentable {
         weak var tableView: NSTableView?
         var lastRevision = -1
         var lastHiddenColumns: Set<Int> = []
+        var lastFilterColumn: Int?
+        var lastFilterText = ""
         private var displayedDocumentRows: [Int] = []
         private var sortColumn: Int?
         private var sortAscending = false
@@ -574,6 +647,17 @@ struct CSVTableView: NSViewRepresentable {
             }
 
             displayedDocumentRows = Array(parent.document.rows.indices.dropFirst())
+            let query = parent.filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let filterColumn = parent.filterColumn,
+               filterColumn < parent.document.columnCount,
+               !query.isEmpty {
+                displayedDocumentRows = displayedDocumentRows.filter { row in
+                    parent.document.value(row: row, column: filterColumn).range(
+                        of: query,
+                        options: [.caseInsensitive, .diacriticInsensitive]
+                    ) != nil
+                }
+            }
             if let sortColumn {
                 displayedDocumentRows.sort { leftRow, rightRow in
                     let left = parent.document.value(row: leftRow, column: sortColumn)
@@ -584,6 +668,8 @@ struct CSVTableView: NSViewRepresentable {
                 }
             }
             updateSortIndicators()
+            lastFilterColumn = parent.filterColumn
+            lastFilterText = parent.filterText
         }
 
         private func documentRow(forVisibleRow row: Int) -> Int? {
@@ -613,6 +699,12 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         private func reloadForSortChange() {
+            refreshDisplayedRows()
+            (tableView as? SpreadsheetTableView)?.clearCellSelection()
+            tableView?.reloadData()
+        }
+
+        func reloadForFilterChange() {
             refreshDisplayedRows()
             (tableView as? SpreadsheetTableView)?.clearCellSelection()
             tableView?.reloadData()
