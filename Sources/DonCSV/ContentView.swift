@@ -100,10 +100,12 @@ struct ContentView: View {
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard !providers.isEmpty else { return false }
-            for provider in providers {
+            let collector = DroppedURLCollector(count: providers.count, completion: openURLs)
+            for (index, provider) in providers.enumerated() {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in openURLs([url]) }
+                    Task { @MainActor in
+                        collector.receive(url, at: index)
+                    }
                 }
             }
             return true
@@ -128,6 +130,28 @@ struct ContentView: View {
         alert.window.initialFirstResponder = input
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         document.setValue(input.stringValue, row: 0, column: selectedColumn)
+    }
+}
+
+@MainActor
+private final class DroppedURLCollector {
+    private var urls: [URL?]
+    private var remainingCount: Int
+    private let completion: ([URL]) -> Void
+
+    init(count: Int, completion: @escaping ([URL]) -> Void) {
+        urls = Array(repeating: nil, count: count)
+        remainingCount = count
+        self.completion = completion
+    }
+
+    func receive(_ url: URL?, at index: Int) {
+        guard urls.indices.contains(index), remainingCount > 0 else { return }
+        urls[index] = url
+        remainingCount -= 1
+        if remainingCount == 0 {
+            completion(urls.compactMap { $0 })
+        }
     }
 }
 

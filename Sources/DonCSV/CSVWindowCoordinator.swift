@@ -42,8 +42,10 @@ final class CSVWindowCoordinator: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.message = "Choose one or more CSV files to edit"
+        panel.prompt = "Open in Tabs"
+        panel.message = "Select several CSV files with Command-click or Shift-click to open each in its own tab."
 
         guard panel.runModal() == .OK else { return }
         open(panel.urls, from: sessionID, openSession: openSession)
