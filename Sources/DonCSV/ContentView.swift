@@ -8,6 +8,8 @@ struct ContentView: View {
     let openURLs: ([URL]) -> Void
     @State private var selectedRow = -1
     @State private var selectedColumn = -1
+    @State private var hiddenColumns: Set<Int> = []
+    @State private var isColumnInspectorPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,7 +27,8 @@ struct ContentView: View {
                 CSVTableView(
                     document: document,
                     selectedRow: $selectedRow,
-                    selectedColumn: $selectedColumn
+                    selectedColumn: $selectedColumn,
+                    hiddenColumns: hiddenColumns
                 )
                 .id(document.fileURL)
             }
@@ -91,12 +94,39 @@ struct ContentView: View {
                     Label("Delete Column", systemImage: "rectangle.split.1x2")
                 }
                 .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
+
+                Divider()
+
+                Button {
+                    isColumnInspectorPresented.toggle()
+                } label: {
+                    Label("Columns", systemImage: "sidebar.right")
+                }
+                .help("Show or hide columns")
+                .disabled(document.fileURL == nil)
             }
+        }
+        .inspector(isPresented: $isColumnInspectorPresented) {
+            ColumnVisibilityInspector(
+                document: document,
+                hiddenColumns: $hiddenColumns
+            )
+            .inspectorColumnWidth(min: 210, ideal: 240, max: 320)
         }
         .navigationTitle(document.fileURL?.lastPathComponent ?? "Don CSV")
         .onChange(of: document.fileURL) {
             selectedRow = -1
             selectedColumn = -1
+            hiddenColumns.removeAll()
+            if document.fileURL == nil {
+                isColumnInspectorPresented = false
+            }
+        }
+        .onChange(of: document.columnCount) {
+            hiddenColumns = hiddenColumns.filter { $0 < document.columnCount }
+            if hiddenColumns.contains(selectedColumn) {
+                selectedColumn = -1
+            }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard !providers.isEmpty else { return false }
@@ -133,6 +163,64 @@ struct ContentView: View {
     }
 }
 
+private struct ColumnVisibilityInspector: View {
+    @ObservedObject var document: CSVDocument
+    @Binding var hiddenColumns: Set<Int>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Columns")
+                    .font(.headline)
+
+                Spacer()
+
+                Button("Show All") {
+                    hiddenColumns.removeAll()
+                }
+                .disabled(hiddenColumns.isEmpty)
+            }
+
+            if document.columnCount == 0 {
+                ContentUnavailableView("No Columns", systemImage: "rectangle.split.3x1")
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(0..<document.columnCount, id: \.self) { column in
+                            Toggle(isOn: visibilityBinding(for: column)) {
+                                Text(title(for: column))
+                                    .lineLimit(1)
+                                    .help(title(for: column))
+                            }
+                            .toggleStyle(.checkbox)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    private func visibilityBinding(for column: Int) -> Binding<Bool> {
+        Binding(
+            get: { !hiddenColumns.contains(column) },
+            set: { isVisible in
+                if isVisible {
+                    hiddenColumns.remove(column)
+                } else {
+                    hiddenColumns.insert(column)
+                }
+            }
+        )
+    }
+
+    private func title(for column: Int) -> String {
+        let heading = document.value(row: 0, column: column)
+        return heading.isEmpty ? "Column \(column + 1)" : heading
+    }
+}
+
 @MainActor
 private final class DroppedURLCollector {
     private var urls: [URL?]
@@ -159,6 +247,7 @@ struct CSVTableView: NSViewRepresentable {
     @ObservedObject var document: CSVDocument
     @Binding var selectedRow: Int
     @Binding var selectedColumn: Int
+    let hiddenColumns: Set<Int>
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -217,7 +306,14 @@ struct CSVTableView: NSViewRepresentable {
 
         if table.numberOfColumns != document.columnCount + 1 {
             context.coordinator.rebuildColumns()
-        } else if context.coordinator.lastRevision != document.revision {
+            return
+        }
+
+        if context.coordinator.lastHiddenColumns != hiddenColumns {
+            context.coordinator.updateColumnVisibility()
+        }
+
+        if context.coordinator.lastRevision != document.revision {
             context.coordinator.refreshDisplayedRows()
             context.coordinator.updateColumnTitlesAndWidths()
             (table as? SpreadsheetTableView)?.clearCellSelection()
@@ -231,6 +327,7 @@ struct CSVTableView: NSViewRepresentable {
         var parent: CSVTableView
         weak var tableView: NSTableView?
         var lastRevision = -1
+        var lastHiddenColumns: Set<Int> = []
         private var displayedDocumentRows: [Int] = []
         private var sortColumn: Int?
         private var sortAscending = false
@@ -566,9 +663,21 @@ struct CSVTableView: NSViewRepresentable {
                 column.resizingMask = .userResizingMask
                 tableView.addTableColumn(column)
             }
+            updateColumnVisibility()
             refreshDisplayedRows()
             tableView.reloadData()
             lastRevision = parent.document.revision
+        }
+
+        func updateColumnVisibility() {
+            guard let tableView else { return }
+            for (index, column) in tableView.tableColumns.dropFirst().enumerated() {
+                column.isHidden = parent.hiddenColumns.contains(index)
+            }
+            if let spreadsheet = tableView as? SpreadsheetTableView {
+                spreadsheet.hiddenDataColumns = parent.hiddenColumns
+            }
+            lastHiddenColumns = parent.hiddenColumns
         }
 
         func updateColumnTitlesAndWidths() {
@@ -688,6 +797,13 @@ private final class SpreadsheetTableView: NSTableView {
     private(set) var selectedCellColumn = -1
     private var anchorRow = -1
     private var anchorColumn = -1
+    var hiddenDataColumns: Set<Int> = [] {
+        didSet {
+            if hiddenDataColumns.contains(selectedCellColumn) {
+                clearCellSelection()
+            }
+        }
+    }
 
     var selectedRows: ClosedRange<Int> {
         min(anchorRow, selectedCellRow)...max(anchorRow, selectedCellRow)
@@ -733,7 +849,8 @@ private final class SpreadsheetTableView: NSTableView {
 
     func selectCell(row: Int, column: Int, extending: Bool = false) {
         guard row >= 0, row < numberOfRows,
-              column >= 0, column < max(numberOfColumns - 1, 0) else { return }
+              column >= 0, column < max(numberOfColumns - 1, 0),
+              !hiddenDataColumns.contains(column) else { return }
 
         setSelectionAppearance(false)
         if !extending || anchorRow < 0 || anchorColumn < 0 {
@@ -812,10 +929,14 @@ private final class SpreadsheetTableView: NSTableView {
     }
 
     private func moveSelection(rowDelta: Int, columnDelta: Int, extending: Bool) {
-        let dataColumnCount = max(numberOfColumns - 1, 0)
-        guard numberOfRows > 0, dataColumnCount > 0 else { return }
+        let visibleColumns = (0..<max(numberOfColumns - 1, 0)).filter {
+            !hiddenDataColumns.contains($0)
+        }
+        guard numberOfRows > 0, !visibleColumns.isEmpty else { return }
         let row = min(max(selectedCellRow + rowDelta, 0), numberOfRows - 1)
-        let column = min(max(selectedCellColumn + columnDelta, 0), dataColumnCount - 1)
+        let currentIndex = visibleColumns.firstIndex(of: selectedCellColumn) ?? 0
+        let columnIndex = min(max(currentIndex + columnDelta, 0), visibleColumns.count - 1)
+        let column = visibleColumns[columnIndex]
         selectCell(row: row, column: column, extending: extending)
     }
 
