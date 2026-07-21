@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 
 @MainActor
@@ -14,6 +15,8 @@ final class CSVDocument: ObservableObject {
     private static let lastFileKey = "DonCSV.lastFilePath"
     private var lastDigest: SHA256.Digest?
     private var monitor: Timer?
+    private var fileChangeWatcher: FileChangeWatcher?
+    private var externalChangeTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
     private var isSecurityScoped = false
     private var hasAttemptedRestore = false
@@ -64,8 +67,7 @@ final class CSVDocument: ObservableObject {
 
     func close() {
         saveTask?.cancel()
-        monitor?.invalidate()
-        monitor = nil
+        stopMonitoring()
         if isSecurityScoped { fileURL?.stopAccessingSecurityScopedResource() }
         isSecurityScoped = false
     }
@@ -250,8 +252,37 @@ final class CSVDocument: ObservableObject {
     }
 
     private func startMonitoring() {
-        monitor = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+        stopMonitoring()
+        guard let url = fileURL else { return }
+
+        fileChangeWatcher = FileChangeWatcher(fileURL: url) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleExternalChangeCheck()
+            }
+        }
+
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.checkForExternalChanges() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        monitor = timer
+    }
+
+    private func stopMonitoring() {
+        externalChangeTask?.cancel()
+        externalChangeTask = nil
+        monitor?.invalidate()
+        monitor = nil
+        fileChangeWatcher?.cancel()
+        fileChangeWatcher = nil
+    }
+
+    private func scheduleExternalChangeCheck() {
+        externalChangeTask?.cancel()
+        externalChangeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            self?.checkForExternalChanges()
         }
     }
 
@@ -262,5 +293,37 @@ final class CSVDocument: ObservableObject {
         saveTask?.cancel()
         apply(data, message: "Updated from disk \(Date.now.formatted(date: .omitted, time: .shortened))")
         undoManager.removeAllActions()
+    }
+}
+
+private final class FileChangeWatcher: @unchecked Sendable {
+    private let source: DispatchSourceFileSystemObject
+    private var isCancelled = false
+
+    init?(fileURL: URL, onChange: @escaping @Sendable () -> Void) {
+        let directoryURL = fileURL.deletingLastPathComponent()
+        let descriptor = Darwin.open(directoryURL.path, O_EVTONLY)
+        guard descriptor >= 0 else { return nil }
+
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename, .attrib, .extend],
+            queue: DispatchQueue.global(qos: .userInitiated)
+        )
+        source.setEventHandler(handler: onChange)
+        source.setCancelHandler {
+            Darwin.close(descriptor)
+        }
+        source.resume()
+    }
+
+    func cancel() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        source.cancel()
+    }
+
+    deinit {
+        cancel()
     }
 }
