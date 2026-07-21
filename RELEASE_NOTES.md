@@ -1,5 +1,14 @@
 # Don CSV Release Notes
 
+## Version 1.2 — 21 July 2026
+
+### Faster navigation and focused views
+
+- Double-clicking any cell now starts editing through the same reliable path as pressing Return or Enter.
+- Show or hide individual columns from the native right-hand Columns sidebar without changing the CSV.
+- Filter rows live by selecting a column and typing a case-insensitive search in the same sidebar.
+- Sort filtered results by clicking column headings, and clear the filter to restore every row.
+
 ## Version 1.1 — 21 July 2026
 
 ### Work with several files
@@ -15,8 +24,6 @@
 - Click a column heading to alternate between descending and ascending sort order.
 - Click the `#` row-number heading to return to the CSV's original order.
 - Right-click a column heading to rename it.
-- Show or hide individual columns from the native right-hand Columns sidebar without changing the CSV.
-- Filter rows live by selecting a column and typing a case-insensitive search in the same sidebar.
 - Improved column-heading sizing, row-number alignment, and table-edge spacing.
 
 ### Live files and autosave

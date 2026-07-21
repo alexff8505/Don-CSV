@@ -587,19 +587,17 @@ struct CSVTableView: NSViewRepresentable {
             guard let tableView = tableView as? SpreadsheetTableView else { return false }
             let row = field.tag / 100_000
             let column = field.tag % 100_000
+
+            if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
+                beginEditing(row: row, column: column, replacement: nil)
+                return false
+            }
+
             tableView.selectCell(
                 row: row,
                 column: column,
                 extending: event.modifierFlags.contains(.shift)
             )
-
-            if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
-                guard let documentRow = documentRow(forVisibleRow: row) else { return false }
-                field.originalValue = parent.document.value(row: documentRow, column: column)
-                field.isEditable = true
-                field.isSelectable = true
-                return true
-            }
 
             tableView.window?.makeFirstResponder(tableView)
             return false
