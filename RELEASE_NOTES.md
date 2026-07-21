@@ -1,5 +1,17 @@
 # Don CSV Release Notes
 
+## Unreleased
+
+### Native macOS polish
+
+- Keeps empty tabs quiet by showing only the Open action until a CSV is loaded.
+- Groups row and column commands into compact native toolbar menus and adds clear tooltips.
+- Uses the standard macOS search field, including its built-in search and clear controls.
+- Reports filtered rows and visible columns accurately in the status bar.
+- Adds the expected Copy, Paste, and Clear Contents cell context menu.
+- Makes Tab and Shift-Tab skip hidden columns and wrap naturally between rows.
+- Restores the last file away from the main thread so a slow or unavailable file cannot freeze launch.
+
 ## Version 1.2 — 21 July 2026
 
 ### Faster navigation and focused views

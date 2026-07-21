@@ -18,6 +18,7 @@ final class CSVDocument: ObservableObject {
     private var fileChangeWatcher: FileChangeWatcher?
     private var externalChangeTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
+    private var restoreTask: Task<Void, Never>?
     private var isSecurityScoped = false
     private var hasAttemptedRestore = false
 
@@ -58,14 +59,30 @@ final class CSVDocument: ObservableObject {
               let path = UserDefaults.standard.string(forKey: Self.lastFileKey) else { return }
 
         let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            UserDefaults.standard.removeObject(forKey: Self.lastFileKey)
-            return
+        restoreTask?.cancel()
+        restoreTask = Task { [weak self] in
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url)
+                }.value
+                guard let self, !Task.isCancelled, self.fileURL == nil else { return }
+
+                let newSecurityScope = url.startAccessingSecurityScopedResource()
+                self.fileURL = url
+                self.isSecurityScoped = newSecurityScope
+                self.apply(data, message: "Loaded \(url.lastPathComponent)")
+                self.undoManager.removeAllActions()
+                self.startMonitoring()
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                UserDefaults.standard.removeObject(forKey: Self.lastFileKey)
+                self.status = "Open a CSV file to begin"
+            }
         }
-        load(url)
     }
 
     func close() {
+        restoreTask?.cancel()
         saveTask?.cancel()
         stopMonitoring()
         if isSecurityScoped { fileURL?.stopAccessingSecurityScopedResource() }

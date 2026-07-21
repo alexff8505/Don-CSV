@@ -41,13 +41,13 @@ struct ContentView: View {
                 Divider()
 
                 HStack(spacing: 12) {
-                    Label(document.status, systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
+                    Label(document.status, systemImage: statusSymbol)
+                        .foregroundStyle(statusIsError ? Color.red : Color.secondary)
                         .lineLimit(1)
 
                     Spacer()
 
-                    Text("\(max(document.rows.count - 1, 0)) data rows  •  \(document.columnCount) columns")
+                    Text(tableSummary)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
@@ -62,56 +62,69 @@ struct ContentView: View {
                 Button { openFiles() } label: {
                     Label("Open", systemImage: "folder")
                 }
+                .help("Open CSV files")
 
-                Button { document.saveNow() } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
+                if document.fileURL != nil {
+                    Button { document.saveNow() } label: {
+                        Label("Save", systemImage: "square.and.arrow.down")
+                    }
+                    .help("Save")
+
+                    Divider()
+
+                    Menu {
+                        Button("Add Row", systemImage: "plus.rectangle.on.rectangle") {
+                            document.addRow()
+                        }
+                        Button("Add Column", systemImage: "rectangle.split.3x1") {
+                            document.addColumn()
+                        }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                    .help("Add a row or column")
+
+                    Menu {
+                        Button("Rename Column…", systemImage: "pencil") {
+                            renameSelectedColumn()
+                        }
+                        .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
+
+                        Divider()
+
+                        Button("Delete Row", systemImage: "minus") {
+                            if selectedRow >= 0 {
+                                document.deleteRow(selectedRow + 1)
+                                selectedRow = -1
+                            }
+                        }
+                        .disabled(selectedRow < 0 || selectedRow >= document.dataRowCount)
+
+                        Button("Delete Column", systemImage: "rectangle.split.1x2") {
+                            if selectedColumn >= 0 {
+                                document.deleteColumn(selectedColumn)
+                                selectedColumn = -1
+                            }
+                        }
+                        .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
+                    } label: {
+                        Label("Table Actions", systemImage: "ellipsis.circle")
+                    }
+                    .help("Table actions")
+
+                    Divider()
+
+                    Button {
+                        isColumnInspectorPresented.toggle()
+                    } label: {
+                        Label("Inspector", systemImage: "sidebar.right")
+                    }
+                    .help(isColumnInspectorPresented ? "Hide Inspector" : "Show Inspector")
                 }
-                .disabled(document.fileURL == nil)
-
-                Divider()
-
-                Button { document.addRow() } label: {
-                    Label("Add Row", systemImage: "plus.rectangle.on.rectangle")
-                }
-                .disabled(document.fileURL == nil)
-
-                Button { document.addColumn() } label: {
-                    Label("Add Column", systemImage: "rectangle.split.3x1")
-                }
-                .disabled(document.fileURL == nil)
-
-                Button { renameSelectedColumn() } label: {
-                    Label("Rename Column", systemImage: "pencil")
-                }
-                .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
-
-                Button {
-                    if selectedRow >= 0 { document.deleteRow(selectedRow + 1); selectedRow = -1 }
-                } label: {
-                    Label("Delete Row", systemImage: "minus")
-                }
-                .disabled(selectedRow < 0 || selectedRow >= document.dataRowCount)
-
-                Button {
-                    if selectedColumn >= 0 { document.deleteColumn(selectedColumn); selectedColumn = -1 }
-                } label: {
-                    Label("Delete Column", systemImage: "rectangle.split.1x2")
-                }
-                .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
-
-                Divider()
-
-                Button {
-                    isColumnInspectorPresented.toggle()
-                } label: {
-                    Label("Columns", systemImage: "sidebar.right")
-                }
-                .help("Show or hide columns")
-                .disabled(document.fileURL == nil)
             }
         }
         .inspector(isPresented: $isColumnInspectorPresented) {
-            ColumnVisibilityInspector(
+            TableInspector(
                 document: document,
                 hiddenColumns: $hiddenColumns,
                 filterColumn: $filterColumn,
@@ -175,9 +188,46 @@ struct ContentView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         document.setValue(input.stringValue, row: 0, column: selectedColumn)
     }
+
+    private var matchingRowCount: Int {
+        let query = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, filterColumn < document.columnCount else {
+            return document.dataRowCount
+        }
+        return document.rows.indices.dropFirst().filter { row in
+            document.value(row: row, column: filterColumn).range(
+                of: query,
+                options: [.caseInsensitive, .diacriticInsensitive]
+            ) != nil
+        }.count
+    }
+
+    private var tableSummary: String {
+        let rowSummary = filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "\(document.dataRowCount) rows"
+            : "\(matchingRowCount) of \(document.dataRowCount) rows"
+        let visibleColumns = max(document.columnCount - hiddenColumns.count, 0)
+        let columnSummary = hiddenColumns.isEmpty
+            ? "\(document.columnCount) columns"
+            : "\(visibleColumns) of \(document.columnCount) columns"
+        return "\(rowSummary)  •  \(columnSummary)"
+    }
+
+    private var statusIsError: Bool {
+        document.status.localizedCaseInsensitiveContains("could not")
+    }
+
+    private var statusSymbol: String {
+        if statusIsError { return "exclamationmark.triangle.fill" }
+        if document.status.hasPrefix("Editing") { return "pencil" }
+        if document.status.localizedCaseInsensitiveContains("disk") {
+            return "arrow.triangle.2.circlepath"
+        }
+        return "checkmark.circle"
+    }
 }
 
-private struct ColumnVisibilityInspector: View {
+private struct TableInspector: View {
     @ObservedObject var document: CSVDocument
     @Binding var hiddenColumns: Set<Int>
     @Binding var filterColumn: Int
@@ -189,27 +239,15 @@ private struct ColumnVisibilityInspector: View {
                 .font(.headline)
 
             if document.columnCount > 0 {
-                Picker("Column", selection: $filterColumn) {
+                Picker("Filter by", selection: $filterColumn) {
                     ForEach(0..<document.columnCount, id: \.self) { column in
                         Text(title(for: column)).tag(column)
                     }
                 }
                 .pickerStyle(.menu)
 
-                HStack(spacing: 6) {
-                    TextField("Filter rows…", text: $filterText)
-                        .textFieldStyle(.roundedBorder)
-
-                    Button {
-                        filterText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Clear filter")
-                    .disabled(filterText.isEmpty)
-                }
+                NativeSearchField(text: $filterText)
+                    .frame(height: 24)
 
                 if !filterText.isEmpty {
                     Text("\(matchingRowCount) of \(document.dataRowCount) rows")
@@ -282,6 +320,43 @@ private struct ColumnVisibilityInspector: View {
                 options: [.caseInsensitive, .diacriticInsensitive]
             ) != nil
         }.count
+    }
+}
+
+private struct NativeSearchField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Filter rows"
+        field.sendsSearchStringImmediately = true
+        field.delegate = context.coordinator
+        field.setAccessibilityLabel("Filter rows")
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.text = $text
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text.wrappedValue = field.stringValue
+        }
     }
 }
 
@@ -486,10 +561,10 @@ struct CSVTableView: NSViewRepresentable {
                 finishEditing(field, moveToRow: row + 1, column: column)
                 return true
             case #selector(NSResponder.insertTab(_:)):
-                finishEditing(field, moveToRow: row, column: column + 1)
+                finishEditing(field, tabbingForwardFromRow: row, column: column)
                 return true
             case #selector(NSResponder.insertBacktab(_:)):
-                finishEditing(field, moveToRow: row, column: column - 1)
+                finishEditing(field, tabbingBackwardFromRow: row, column: column)
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 field.isCancellingEdit = true
@@ -606,6 +681,46 @@ struct CSVTableView: NSViewRepresentable {
         private func finishEditing(_ field: CSVTextField, moveToRow row: Int, column: Int) {
             field.window?.makeFirstResponder(tableView)
             moveSelection(toRow: row, column: column)
+        }
+
+        private func finishEditing(
+            _ field: CSVTextField,
+            tabbingForwardFromRow row: Int,
+            column: Int
+        ) {
+            field.window?.makeFirstResponder(tableView)
+            guard let target = tabTarget(fromRow: row, column: column, forward: true) else { return }
+            moveSelection(toRow: target.row, column: target.column)
+        }
+
+        private func finishEditing(
+            _ field: CSVTextField,
+            tabbingBackwardFromRow row: Int,
+            column: Int
+        ) {
+            field.window?.makeFirstResponder(tableView)
+            guard let target = tabTarget(fromRow: row, column: column, forward: false) else { return }
+            moveSelection(toRow: target.row, column: target.column)
+        }
+
+        private func tabTarget(fromRow row: Int, column: Int, forward: Bool) -> (row: Int, column: Int)? {
+            let visibleColumns = (0..<parent.document.columnCount).filter {
+                !parent.hiddenColumns.contains($0)
+            }
+            guard !displayedDocumentRows.isEmpty, !visibleColumns.isEmpty else { return nil }
+
+            let currentIndex = visibleColumns.firstIndex(of: column) ?? 0
+            if forward {
+                if currentIndex < visibleColumns.count - 1 {
+                    return (row, visibleColumns[currentIndex + 1])
+                }
+                return (min(row + 1, displayedDocumentRows.count - 1), visibleColumns[0])
+            }
+
+            if currentIndex > 0 {
+                return (row, visibleColumns[currentIndex - 1])
+            }
+            return (max(row - 1, 0), visibleColumns[visibleColumns.count - 1])
         }
 
         func setHeaderValue(_ value: String, for column: Int) {
@@ -927,6 +1042,54 @@ private final class SpreadsheetTableView: NSTableView {
         }
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let location = convert(event.locationInWindow, from: nil)
+        let clickedRow = row(at: location)
+        let physicalColumn = column(at: location)
+        guard clickedRow >= 0, physicalColumn > 0 else {
+            return super.menu(for: event)
+        }
+
+        let dataColumn = physicalColumn - 1
+        if !selectionContains(row: clickedRow, column: dataColumn) {
+            selectCell(row: clickedRow, column: dataColumn)
+        }
+        window?.makeFirstResponder(self)
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let copyItem = menu.addItem(
+            withTitle: "Copy",
+            action: #selector(copy(_:)),
+            keyEquivalent: "c"
+        )
+        copyItem.keyEquivalentModifierMask = .command
+        copyItem.target = self
+        copyItem.isEnabled = selectedCellRow >= 0
+
+        let pasteItem = menu.addItem(
+            withTitle: "Paste",
+            action: #selector(paste(_:)),
+            keyEquivalent: "v"
+        )
+        pasteItem.keyEquivalentModifierMask = .command
+        pasteItem.target = self
+        pasteItem.isEnabled = selectedCellRow >= 0
+            && NSPasteboard.general.string(forType: .string) != nil
+
+        menu.addItem(.separator())
+
+        let clearItem = menu.addItem(
+            withTitle: "Clear Contents",
+            action: #selector(clearContents(_:)),
+            keyEquivalent: ""
+        )
+        clearItem.target = self
+        clearItem.isEnabled = selectedCellRow >= 0
+        return menu
+    }
+
     func selectionContains(row: Int, column: Int) -> Bool {
         guard anchorRow >= 0, anchorColumn >= 0,
               selectedCellRow >= 0, selectedCellColumn >= 0 else { return false }
@@ -981,13 +1144,16 @@ private final class SpreadsheetTableView: NSTableView {
             }
         }
 
+        if event.keyCode == 48 {
+            moveSelectionByTab(forward: !event.modifierFlags.contains(.shift))
+            return
+        }
+
         let movement: (row: Int, column: Int)? = switch event.keyCode {
         case 126: (-1, 0) // Up
         case 125: (1, 0)  // Down
         case 123: (0, -1) // Left
         case 124: (0, 1)  // Right
-        case 48 where event.modifierFlags.contains(.shift): (0, -1) // Shift-Tab
-        case 48: (0, 1) // Tab
         default: nil
         }
 
@@ -1030,6 +1196,32 @@ private final class SpreadsheetTableView: NSTableView {
         selectCell(row: row, column: column, extending: extending)
     }
 
+    private func moveSelectionByTab(forward: Bool) {
+        let visibleColumns = (0..<max(numberOfColumns - 1, 0)).filter {
+            !hiddenDataColumns.contains($0)
+        }
+        guard numberOfRows > 0, !visibleColumns.isEmpty else { return }
+
+        let currentIndex = visibleColumns.firstIndex(of: selectedCellColumn) ?? 0
+        if forward {
+            if currentIndex < visibleColumns.count - 1 {
+                selectCell(row: selectedCellRow, column: visibleColumns[currentIndex + 1])
+            } else {
+                selectCell(
+                    row: min(selectedCellRow + 1, numberOfRows - 1),
+                    column: visibleColumns[0]
+                )
+            }
+        } else if currentIndex > 0 {
+            selectCell(row: selectedCellRow, column: visibleColumns[currentIndex - 1])
+        } else {
+            selectCell(
+                row: max(selectedCellRow - 1, 0),
+                column: visibleColumns[visibleColumns.count - 1]
+            )
+        }
+    }
+
     private func setSelectionAppearance(_ selected: Bool) {
         guard anchorRow >= 0, anchorColumn >= 0,
               selectedCellRow >= 0, selectedCellColumn >= 0 else { return }
@@ -1060,6 +1252,11 @@ private final class SpreadsheetTableView: NSTableView {
 
     @objc func paste(_ sender: Any?) {
         pasteSelection()
+    }
+
+    @objc private func clearContents(_ sender: Any?) {
+        guard selectedCellRow >= 0, selectedCellColumn >= 0 else { return }
+        clearHandler?(selectedRows, selectedColumns)
     }
 
     private func copySelection() {
