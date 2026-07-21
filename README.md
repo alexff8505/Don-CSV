@@ -2,6 +2,8 @@
 
 A small, native macOS CSV editor written in Swift and SwiftUI.
 
+Requires macOS Tahoe 26 or later.
+
 ## Run
 
 Open `Package.swift` in Xcode and press Run, or use:

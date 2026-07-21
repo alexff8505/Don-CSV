@@ -30,25 +30,25 @@ struct ContentView: View {
                 .id(document.fileURL)
             }
 
-            Divider()
+            if document.fileURL != nil {
+                Divider()
 
-            HStack(spacing: 12) {
-                Label(document.status, systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 12) {
+                    Label(document.status, systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
 
-                Spacer()
+                    Spacer()
 
-                if document.fileURL != nil {
                     Text("\(max(document.rows.count - 1, 0)) data rows  •  \(document.columnCount) columns")
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(.bar)
             }
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(.bar)
         }
         .toolbar {
             ToolbarItemGroup {

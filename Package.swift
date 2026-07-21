@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "DonCSV",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "DonCSV", targets: ["DonCSV"])
     ],
