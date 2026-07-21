@@ -153,7 +153,11 @@ struct CSVTableView: NSViewRepresentable {
         table.selectionHighlightStyle = .none
         table.backgroundColor = .textBackgroundColor
 
-        table.headerView = NSTableHeaderView()
+        let header = SpreadsheetHeaderView()
+        header.renameHandler = { [weak coordinator = context.coordinator] column in
+            coordinator?.promptToRenameHeader(column)
+        }
+        table.headerView = header
 
         let scrollView = NSScrollView()
         scrollView.documentView = table
@@ -189,7 +193,9 @@ struct CSVTableView: NSViewRepresentable {
         if table.numberOfColumns != document.columnCount + 1 {
             context.coordinator.rebuildColumns()
         } else if context.coordinator.lastRevision != document.revision {
+            context.coordinator.refreshDisplayedRows()
             context.coordinator.updateColumnTitlesAndWidths()
+            (table as? SpreadsheetTableView)?.clearCellSelection()
             table.reloadData()
             context.coordinator.lastRevision = document.revision
         }
@@ -200,21 +206,26 @@ struct CSVTableView: NSViewRepresentable {
         var parent: CSVTableView
         weak var tableView: NSTableView?
         var lastRevision = -1
+        private var displayedDocumentRows: [Int] = []
+        private var sortColumn: Int?
+        private var sortAscending = false
 
         init(_ parent: CSVTableView) { self.parent = parent }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
-            max(parent.document.rows.count - 1, 0)
+            displayedDocumentRows.count
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let tableColumn else { return nil }
 
+            guard let documentRow = documentRow(forVisibleRow: row) else { return nil }
+
             if tableColumn.identifier.rawValue == "rowNumber" {
                 let identifier = NSUserInterfaceItemIdentifier("RowNumberCell")
                 let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? RowNumberCellView)
                     ?? RowNumberCellView(identifier: identifier)
-                cell.number = row + 2
+                cell.number = documentRow + 1
                 cell.isRangeSelected = (tableView as? SpreadsheetTableView)?.rowIsSelected(row) ?? false
                 return cell
             }
@@ -226,7 +237,7 @@ struct CSVTableView: NSViewRepresentable {
             let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? CSVCellView)
                 ?? CSVCellView(identifier: identifier)
             let field = cell.editor
-            field.stringValue = parent.document.value(row: row + 1, column: column)
+            field.stringValue = parent.document.value(row: documentRow, column: column)
             field.tag = row * 100_000 + column
             field.delegate = self
             field.isEditable = false
@@ -240,12 +251,11 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
-            guard let physicalColumn = tableView.tableColumns.firstIndex(of: tableColumn),
-                  physicalColumn > 0 else { return }
-            let dataColumn = physicalColumn - 1
-            parent.selectedColumn = dataColumn
-            DispatchQueue.main.async { [weak self] in
-                self?.promptToRenameHeader(dataColumn)
+            guard let physicalColumn = tableView.tableColumns.firstIndex(of: tableColumn) else { return }
+            if physicalColumn == 0 {
+                resetSort()
+            } else {
+                toggleSort(column: physicalColumn - 1)
             }
         }
 
@@ -262,8 +272,9 @@ struct CSVTableView: NSViewRepresentable {
 
             let row = field.tag / 100_000
             let column = field.tag % 100_000
-            parent.document.setValue(field.stringValue, row: row + 1, column: column)
-            lastRevision = parent.document.revision
+            guard let documentRow = documentRow(forVisibleRow: row) else { return }
+            parent.document.setValue(field.stringValue, row: documentRow, column: column)
+            refreshAfterMutation()
         }
 
         func control(
@@ -297,7 +308,7 @@ struct CSVTableView: NSViewRepresentable {
 
         private func moveSelection(toRow row: Int, column: Int) {
             guard let tableView = tableView as? SpreadsheetTableView,
-                  row >= 0, row < max(parent.document.rows.count - 1, 0),
+                  row >= 0, row < displayedDocumentRows.count,
                   column >= 0, column < parent.document.columnCount else { return }
 
             tableView.selectCell(row: row, column: column)
@@ -305,13 +316,13 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         func selectCell(row: Int, column: Int) {
-            parent.selectedRow = row
+            parent.selectedRow = (documentRow(forVisibleRow: row) ?? 0) - 1
             parent.selectedColumn = column
         }
 
         func beginEditing(row: Int, column: Int, replacement: String?) {
             guard let tableView = tableView as? SpreadsheetTableView,
-                  row >= 0, row < max(parent.document.rows.count - 1, 0),
+                  let documentRow = documentRow(forVisibleRow: row),
                   column >= 0, column < parent.document.columnCount,
                   let cell = tableView.view(
                     atColumn: column + 1,
@@ -321,7 +332,7 @@ struct CSVTableView: NSViewRepresentable {
 
             tableView.selectCell(row: row, column: column)
             let field = cell.editor
-            field.originalValue = parent.document.value(row: row + 1, column: column)
+            field.originalValue = parent.document.value(row: documentRow, column: column)
             field.isEditable = true
             field.isSelectable = true
 
@@ -338,17 +349,17 @@ struct CSVTableView: NSViewRepresentable {
         func clearCells(rows: ClosedRange<Int>, columns: ClosedRange<Int>) {
             parent.document.pasteValues(
                 [[""]],
-                startingAtRow: rows.lowerBound + 1,
+                intoRows: documentRows(forVisibleRows: rows),
                 column: columns.lowerBound,
-                selectedRowCount: rows.count,
                 selectedColumnCount: columns.count
             )
+            refreshAfterMutation()
         }
 
         func copyValues(rows: ClosedRange<Int>, columns: ClosedRange<Int>) -> String {
-            let values = rows.map { row in
+            let values = documentRows(forVisibleRows: rows).map { row in
                 columns.map { column in
-                    parent.document.value(row: row + 1, column: column)
+                    parent.document.value(row: row, column: column)
                 }
             }
             return ClipboardGrid.encode(values)
@@ -360,13 +371,21 @@ struct CSVTableView: NSViewRepresentable {
             columns: ClosedRange<Int>
         ) {
             let values = ClipboardGrid.decode(text)
+            let targetHeight = max(values.count, rows.count)
+            let lastVisibleRow = min(
+                rows.lowerBound + targetHeight - 1,
+                max(displayedDocumentRows.count - 1, 0)
+            )
+            let targetRows = displayedDocumentRows.isEmpty
+                ? []
+                : documentRows(forVisibleRows: rows.lowerBound...lastVisibleRow)
             parent.document.pasteValues(
                 values,
-                startingAtRow: rows.lowerBound + 1,
+                intoRows: targetRows,
                 column: columns.lowerBound,
-                selectedRowCount: rows.count,
                 selectedColumnCount: columns.count
             )
+            refreshAfterMutation()
         }
 
         private func handleCellClick(_ field: CSVTextField, event: NSEvent) -> Bool {
@@ -380,7 +399,8 @@ struct CSVTableView: NSViewRepresentable {
             )
 
             if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
-                field.originalValue = parent.document.value(row: row + 1, column: column)
+                guard let documentRow = documentRow(forVisibleRow: row) else { return false }
+                field.originalValue = parent.document.value(row: documentRow, column: column)
                 field.isEditable = true
                 field.isSelectable = true
                 return true
@@ -402,8 +422,9 @@ struct CSVTableView: NSViewRepresentable {
             tableView?.tableColumns[column + 1].title = value.isEmpty ? "Column \(column + 1)" : value
         }
 
-        private func promptToRenameHeader(_ column: Int) {
+        func promptToRenameHeader(_ column: Int) {
             guard column >= 0, column < parent.document.columnCount else { return }
+            parent.selectedColumn = column
 
             let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
             input.stringValue = parent.document.value(row: 0, column: column)
@@ -422,14 +443,87 @@ struct CSVTableView: NSViewRepresentable {
             setHeaderValue(input.stringValue, for: column)
         }
 
+        func refreshDisplayedRows() {
+            if let sortColumn, sortColumn >= parent.document.columnCount {
+                self.sortColumn = nil
+                sortAscending = false
+            }
+
+            displayedDocumentRows = Array(parent.document.rows.indices.dropFirst())
+            if let sortColumn {
+                displayedDocumentRows.sort { leftRow, rightRow in
+                    let left = parent.document.value(row: leftRow, column: sortColumn)
+                    let right = parent.document.value(row: rightRow, column: sortColumn)
+                    let comparison = left.localizedStandardCompare(right)
+                    if comparison == .orderedSame { return leftRow < rightRow }
+                    return sortAscending ? comparison == .orderedAscending : comparison == .orderedDescending
+                }
+            }
+            updateSortIndicators()
+        }
+
+        private func documentRow(forVisibleRow row: Int) -> Int? {
+            guard displayedDocumentRows.indices.contains(row) else { return nil }
+            return displayedDocumentRows[row]
+        }
+
+        private func documentRows(forVisibleRows rows: ClosedRange<Int>) -> [Int] {
+            rows.compactMap(documentRow(forVisibleRow:))
+        }
+
+        private func toggleSort(column: Int) {
+            guard column >= 0, column < parent.document.columnCount else { return }
+            if sortColumn == column {
+                sortAscending.toggle()
+            } else {
+                sortColumn = column
+                sortAscending = false
+            }
+            reloadForSortChange()
+        }
+
+        private func resetSort() {
+            sortColumn = nil
+            sortAscending = false
+            reloadForSortChange()
+        }
+
+        private func reloadForSortChange() {
+            refreshDisplayedRows()
+            (tableView as? SpreadsheetTableView)?.clearCellSelection()
+            tableView?.reloadData()
+        }
+
+        private func refreshAfterMutation() {
+            lastRevision = parent.document.revision
+            refreshDisplayedRows()
+            (tableView as? SpreadsheetTableView)?.clearCellSelection()
+            tableView?.reloadData()
+        }
+
+        private func updateSortIndicators() {
+            guard let tableView else { return }
+            for column in tableView.tableColumns {
+                tableView.setIndicatorImage(nil, in: column)
+            }
+            guard let sortColumn,
+                  tableView.tableColumns.indices.contains(sortColumn + 1) else { return }
+            let symbolName = sortAscending ? "chevron.up" : "chevron.down"
+            let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+            tableView.setIndicatorImage(image, in: tableView.tableColumns[sortColumn + 1])
+        }
+
         func rebuildColumns() {
             guard let tableView else { return }
+            sortColumn = nil
+            sortAscending = false
             for column in tableView.tableColumns {
                 tableView.removeTableColumn(column)
             }
 
             let rowNumberColumn = NSTableColumn(identifier: .init("rowNumber"))
-            rowNumberColumn.title = ""
+            rowNumberColumn.title = "#"
+            rowNumberColumn.headerToolTip = "Restore original row order"
             rowNumberColumn.minWidth = 38
             rowNumberColumn.maxWidth = 38
             rowNumberColumn.width = 38
@@ -439,12 +533,13 @@ struct CSVTableView: NSViewRepresentable {
             for index in 0..<parent.document.columnCount {
                 let column = NSTableColumn(identifier: .init("c\(index)"))
                 column.title = title(for: index)
-                column.headerToolTip = "Click to rename"
+                column.headerToolTip = "Click to sort; right-click to rename"
                 column.minWidth = 60
                 column.width = preferredWidth(for: index)
                 column.resizingMask = .userResizingMask
                 tableView.addTableColumn(column)
             }
+            refreshDisplayedRows()
             tableView.reloadData()
             lastRevision = parent.document.revision
         }
@@ -529,6 +624,23 @@ private enum ClipboardGrid {
 }
 
 @MainActor
+private final class SpreadsheetHeaderView: NSTableHeaderView {
+    var renameHandler: ((Int) -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let physicalColumn = column(at: location)
+        guard physicalColumn > 0 else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.renameHandler?(physicalColumn - 1)
+        }
+    }
+}
+
+@MainActor
 private final class SpreadsheetTableView: NSTableView {
     var selectionHandler: ((Int, Int) -> Void)?
     var editHandler: ((Int, Int, String?) -> Void)?
@@ -549,6 +661,28 @@ private final class SpreadsheetTableView: NSTableView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        let location = convert(event.locationInWindow, from: nil)
+        let clickedRow = row(at: location)
+        let physicalColumn = column(at: location)
+        guard clickedRow >= 0, physicalColumn > 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let dataColumn = physicalColumn - 1
+        selectCell(
+            row: clickedRow,
+            column: dataColumn,
+            extending: event.modifierFlags.contains(.shift)
+        )
+        window?.makeFirstResponder(self)
+
+        if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
+            editHandler?(clickedRow, dataColumn, nil)
+        }
+    }
 
     func selectionContains(row: Int, column: Int) -> Bool {
         guard anchorRow >= 0, anchorColumn >= 0,
@@ -575,6 +709,15 @@ private final class SpreadsheetTableView: NSTableView {
         scrollRowToVisible(row)
         scrollColumnToVisible(column + 1)
         selectionHandler?(row, column)
+    }
+
+    func clearCellSelection() {
+        setSelectionAppearance(false)
+        selectedCellRow = -1
+        selectedCellColumn = -1
+        anchorRow = -1
+        anchorColumn = -1
+        selectionHandler?(-1, -1)
     }
 
     override func keyDown(with event: NSEvent) {

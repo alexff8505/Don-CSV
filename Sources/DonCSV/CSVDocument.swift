@@ -148,6 +148,44 @@ final class CSVDocument: ObservableObject {
         }
     }
 
+    func pasteValues(
+        _ values: [[String]],
+        intoRows targetRows: [Int],
+        column startColumn: Int,
+        selectedColumnCount: Int = 1
+    ) {
+        guard fileURL != nil, startColumn >= 0, !values.isEmpty else { return }
+        let pastedWidth = values.map(\.count).max() ?? 0
+        guard pastedWidth > 0 else { return }
+
+        mutate(actionName: "Paste Cells") {
+            let validTargetRows = targetRows.filter { rows.indices.contains($0) && $0 > 0 }
+            let targetHeight = max(values.count, validTargetRows.count)
+            guard targetHeight > 0 else { return }
+
+            let targetWidth = max(pastedWidth, selectedColumnCount)
+            let requiredColumnCount = max(columnCount, startColumn + targetWidth)
+            var rowIndexes = validTargetRows
+            while rowIndexes.count < targetHeight {
+                rows.append(Array(repeating: "", count: requiredColumnCount))
+                rowIndexes.append(rows.count - 1)
+            }
+
+            for rowOffset in 0..<targetHeight {
+                let rowIndex = rowIndexes[rowOffset]
+                while rows[rowIndex].count < requiredColumnCount {
+                    rows[rowIndex].append("")
+                }
+                let pastedRow = values[rowOffset % values.count]
+                for columnOffset in 0..<targetWidth {
+                    let sourceColumn = columnOffset % pastedWidth
+                    let value = pastedRow.indices.contains(sourceColumn) ? pastedRow[sourceColumn] : ""
+                    rows[rowIndex][startColumn + columnOffset] = value
+                }
+            }
+        }
+    }
+
     func saveNow() {
         saveTask?.cancel()
         guard let url = fileURL else { return }
