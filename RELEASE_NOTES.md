@@ -1,6 +1,6 @@
 # Don CSV Release Notes
 
-## Version 1.0 — 21 July 2026
+## Version 1.1 — 21 July 2026
 
 ### Work with several files
 
