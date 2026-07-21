@@ -27,7 +27,7 @@ swift run DonCSV
 - Copy and paste selected ranges while preserving their row/column pattern
 - Paste tab/newline spreadsheet data; a single value fills a larger selection
 - Automatic saving after edits
-- External file changes appear within about one second
+- Open files stay live as external changes appear automatically, alongside in-app autosave
 - Add and delete rows or columns
 - CSV quoting, embedded commas, and multiline fields are preserved
 - Drag-and-drop CSV opening
