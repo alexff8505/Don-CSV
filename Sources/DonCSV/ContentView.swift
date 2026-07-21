@@ -420,7 +420,9 @@ struct CSVTableView: NSViewRepresentable {
             guard column >= 0, column < parent.document.columnCount else { return }
             parent.document.setValue(value, row: 0, column: column)
             lastRevision = parent.document.revision
-            tableView?.tableColumns[column + 1].title = value.isEmpty ? "Column \(column + 1)" : value
+            if let tableColumn = tableView?.tableColumns[column + 1] {
+                setHeaderTitle(value.isEmpty ? "Column \(column + 1)" : value, for: tableColumn)
+            }
         }
 
         func promptToRenameHeader(_ column: Int) {
@@ -516,7 +518,6 @@ struct CSVTableView: NSViewRepresentable {
 
         func rebuildColumns() {
             guard let tableView else { return }
-            let headerFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             sortColumn = nil
             sortAscending = false
             for column in tableView.tableColumns {
@@ -524,8 +525,7 @@ struct CSVTableView: NSViewRepresentable {
             }
 
             let rowNumberColumn = NSTableColumn(identifier: .init("rowNumber"))
-            rowNumberColumn.title = "#"
-            rowNumberColumn.headerCell.font = headerFont
+            setHeaderTitle("#", for: rowNumberColumn)
             rowNumberColumn.headerToolTip = "Restore original row order"
             rowNumberColumn.minWidth = 38
             rowNumberColumn.maxWidth = 38
@@ -535,8 +535,7 @@ struct CSVTableView: NSViewRepresentable {
 
             for index in 0..<parent.document.columnCount {
                 let column = NSTableColumn(identifier: .init("c\(index)"))
-                column.title = title(for: index)
-                column.headerCell.font = headerFont
+                setHeaderTitle(title(for: index), for: column)
                 column.headerToolTip = "Click to sort; right-click to rename"
                 column.minWidth = 60
                 column.width = preferredWidth(for: index)
@@ -551,9 +550,19 @@ struct CSVTableView: NSViewRepresentable {
         func updateColumnTitlesAndWidths() {
             guard let tableView else { return }
             for (index, column) in tableView.tableColumns.dropFirst().enumerated() {
-                column.title = title(for: index)
+                setHeaderTitle(title(for: index), for: column)
                 column.width = max(column.width, preferredWidth(for: index))
             }
+        }
+
+        private func setHeaderTitle(_ title: String, for column: NSTableColumn) {
+            column.headerCell.attributedStringValue = NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.systemFontSize + 0.5, weight: .semibold),
+                    .foregroundColor: NSColor.labelColor
+                ]
+            )
         }
 
         private func title(for column: Int) -> String {
