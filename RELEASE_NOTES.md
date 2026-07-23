@@ -16,6 +16,8 @@
 
 ### Native macOS polish
 
+- Creates a new, immediately editable CSV from File → New CSV or Command-N using the standard Save panel.
+- Shows the ten most recently opened CSV files in File → Open Recent, with the standard Clear Menu action.
 - Keeps empty tabs quiet by showing only the Open action until a CSV is loaded.
 - Groups row and column commands into compact native toolbar menus and adds clear tooltips.
 - Uses the standard macOS search field, including its built-in search and clear controls.

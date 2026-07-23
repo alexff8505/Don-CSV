@@ -19,6 +19,11 @@ final class CSVWindowCoordinator: ObservableObject {
     private var lastActiveWindow: WeakWindow?
     private var handledExternalOpenRequests: Set<UUID> = []
     private var didAttemptInitialRestore = false
+    @Published private(set) var recentDocumentURLs: [URL] = []
+
+    init() {
+        refreshRecentDocuments()
+    }
 
     func document(for sessionID: UUID) -> CSVDocument {
         if let document = documents[sessionID] {
@@ -43,7 +48,36 @@ final class CSVWindowCoordinator: ObservableObject {
     func restoreInitialFileIfNeeded(into document: CSVDocument) {
         guard !didAttemptInitialRestore else { return }
         didAttemptInitialRestore = true
-        document.restoreLastFileIfAvailable()
+        document.restoreLastFileIfAvailable { [weak self] url in
+            self?.rememberRecentDocument(url)
+        }
+    }
+
+    func presentNewCSVPanel(
+        from sessionID: UUID?,
+        openSession: (UUID) -> Void
+    ) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "Untitled.csv"
+        panel.title = "New CSV"
+        panel.prompt = "Create"
+        panel.message = "Choose where to create the new CSV file."
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let initialRows = [["Column 1"], [""]]
+            try Data(CSVCodec.encode(initialRows).utf8).write(to: url, options: .atomic)
+            open([url], from: sessionID, openSession: openSession)
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Could Not Create CSV"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
     }
 
     func presentOpenPanel(
@@ -81,6 +115,7 @@ final class CSVWindowCoordinator: ObservableObject {
 
         for url in uniqueURLs {
             if let existingSessionID = sessionID(for: url) {
+                rememberRecentDocument(url)
                 focusWindow(for: existingSessionID)
                 continue
             }
@@ -89,6 +124,7 @@ final class CSVWindowCoordinator: ObservableObject {
                let sourceSessionID,
                let sourceDocument = documents[sourceSessionID],
                sourceDocument.load(url) {
+                rememberRecentDocument(url)
                 canReuseSource = false
                 focusWindow(for: sourceSessionID)
                 continue
@@ -97,6 +133,7 @@ final class CSVWindowCoordinator: ObservableObject {
             let sessionID = UUID()
             let document = CSVDocument()
             guard document.load(url) else { continue }
+            rememberRecentDocument(url)
             documents[sessionID] = document
             if let sourceWindow {
                 pendingTabParents[sessionID] = WeakWindow(sourceWindow)
@@ -137,6 +174,11 @@ final class CSVWindowCoordinator: ObservableObject {
 
     func activeTableEditingHelper() -> CSVTableEditingHelper? {
         activeSessionID().flatMap { tableEditingHelpers[$0] }
+    }
+
+    func clearRecentDocuments() {
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        refreshRecentDocuments()
     }
 
     func handleExternalOpen(
@@ -208,6 +250,15 @@ final class CSVWindowCoordinator: ObservableObject {
     private func canonical(_ url: URL) -> URL {
         url.standardizedFileURL.resolvingSymlinksInPath()
     }
+
+    private func rememberRecentDocument(_ url: URL) {
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        refreshRecentDocuments()
+    }
+
+    private func refreshRecentDocuments() {
+        recentDocumentURLs = Array(NSDocumentController.shared.recentDocumentURLs.prefix(10))
+    }
 }
 
 struct CSVAppCommands: Commands {
@@ -223,10 +274,19 @@ struct CSVAppCommands: Commands {
         }
 
         CommandGroup(replacing: .newItem) {
+            Button("New CSV…") {
+                coordinator.presentNewCSVPanel(from: coordinator.activeSessionID()) {
+                    openWindow(value: $0)
+                }
+            }
+            .keyboardShortcut("n")
+
+            Divider()
+
             Button("New Window") {
                 coordinator.openNewWindow { openWindow(value: $0) }
             }
-            .keyboardShortcut("n")
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button("New Tab") {
                 coordinator.openNewTab(from: coordinator.activeSessionID()) {
@@ -243,6 +303,30 @@ struct CSVAppCommands: Commands {
                 }
             }
             .keyboardShortcut("o")
+
+            Menu("Open Recent") {
+                if coordinator.recentDocumentURLs.isEmpty {
+                    Button("No Recent Documents") {}
+                        .disabled(true)
+                } else {
+                    ForEach(coordinator.recentDocumentURLs, id: \.self) { url in
+                        Button(url.lastPathComponent) {
+                            coordinator.open([url], from: coordinator.activeSessionID()) {
+                                openWindow(value: $0)
+                            }
+                        }
+                        .help(url.path)
+                    }
+
+                    Divider()
+
+                    Button("Clear Menu") {
+                        coordinator.clearRecentDocuments()
+                    }
+                }
+            }
+
+            Divider()
 
             Button("Save") { coordinator.activeDocument()?.saveNow() }
                 .keyboardShortcut("s")

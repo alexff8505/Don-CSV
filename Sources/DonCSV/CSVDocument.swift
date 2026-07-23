@@ -52,7 +52,7 @@ final class CSVDocument: ObservableObject {
         }
     }
 
-    func restoreLastFileIfAvailable() {
+    func restoreLastFileIfAvailable(onRestore: ((URL) -> Void)? = nil) {
         guard !hasAttemptedRestore else { return }
         hasAttemptedRestore = true
         guard fileURL == nil,
@@ -73,6 +73,7 @@ final class CSVDocument: ObservableObject {
                 self.apply(data, message: "Loaded \(url.lastPathComponent)")
                 self.undoManager.removeAllActions()
                 self.startMonitoring()
+                onRestore?(url)
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 UserDefaults.standard.removeObject(forKey: Self.lastFileKey)
