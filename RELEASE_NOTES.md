@@ -20,7 +20,7 @@
 - Shows the ten most recently opened CSV files in File → Open Recent, with the standard Clear Menu action.
 - Commits an active cell edit and moves one visible cell to the right with Shift-Return.
 - Keeps empty tabs quiet by showing only the Open action until a CSV is loaded.
-- Groups row and column commands into compact native toolbar menus and adds clear tooltips.
+- Groups table commands into one compact native toolbar menu and adds clear tooltips.
 - Uses the standard macOS search field, including its built-in search and clear controls.
 - Reports filtered rows and visible columns accurately in the status bar.
 - Adds the expected Copy, Paste, and Clear Contents cell context menu.

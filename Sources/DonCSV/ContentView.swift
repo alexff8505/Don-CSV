@@ -61,9 +61,11 @@ struct ContentView: View {
                         Label("Save", systemImage: "square.and.arrow.down")
                     }
                     .help("Save")
+                }
+            }
 
-                    Divider()
-
+            if document.fileURL != nil {
+                ToolbarItem {
                     Menu {
                         Button("Add Row", systemImage: "plus.rectangle.on.rectangle") {
                             document.addRow()
@@ -71,17 +73,6 @@ struct ContentView: View {
                         Button("Add Column", systemImage: "rectangle.split.3x1") {
                             document.addColumn()
                         }
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                    }
-                    .help("Add a row or column")
-
-                    Menu {
-                        Button("Rename Column…", systemImage: "pencil") {
-                            renameSelectedColumn()
-                        }
-                        .disabled(tableEditingHelper.selectedColumns.count != 1
-                            || tableEditingHelper.selectedColumns[0] >= document.columnCount)
 
                         Divider()
 
@@ -95,12 +86,12 @@ struct ContentView: View {
                         }
                         .disabled(tableEditingHelper.selectedColumns.isEmpty)
                     } label: {
-                        Label("Table Actions", systemImage: "ellipsis.circle")
+                        Label("Table", systemImage: "tablecells")
                     }
                     .help("Table actions")
+                }
 
-                    Divider()
-
+                ToolbarItem {
                     Button {
                         isColumnInspectorPresented.toggle()
                     } label: {
@@ -164,28 +155,6 @@ struct ContentView: View {
 
     private func deleteSelectedColumns() {
         tableEditingHelper.deleteSelectedColumns(from: document)
-    }
-
-    private func renameSelectedColumn() {
-        guard tableEditingHelper.selectedColumns.count == 1 else { return }
-        let selectedColumn = tableEditingHelper.selectedColumns[0]
-        guard selectedColumn >= 0, selectedColumn < document.columnCount else { return }
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        input.stringValue = document.value(row: 0, column: selectedColumn)
-        input.placeholderString = "Column \(selectedColumn + 1)"
-
-        let alert = NSAlert()
-        alert.messageText = "Rename Column"
-        alert.informativeText = "Enter the name for column \(selectedColumn + 1)."
-        alert.alertStyle = .informational
-        alert.accessoryView = input
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-
-        alert.window.initialFirstResponder = input
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        document.setValue(input.stringValue, row: 0, column: selectedColumn)
     }
 
     private var matchingRowCount: Int {
