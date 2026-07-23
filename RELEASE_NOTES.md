@@ -1,6 +1,18 @@
 # Don CSV Release Notes
 
-## Unreleased
+## Version 1.3 — 23 July 2026
+
+### Multi-row and multi-column editing
+
+- Select rectangular ranges with Shift-click or Shift-arrow navigation.
+- Select one or more complete rows from the numbered `#` gutter.
+- Delete every selected row or column from Table Actions, the context menu, the Table menu, or keyboard shortcuts.
+- Use Command-Delete to remove selected rows and Command-Option-Delete to remove selected columns; plain Delete continues to clear cell contents.
+- Keep hidden columns and the active filter aligned through column deletion, Undo, and Redo.
+
+### Credits
+
+- Multi-row and multi-column editing was contributed by Tatum Bisley.
 
 ### Native macOS polish
 
