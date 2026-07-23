@@ -4,14 +4,10 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var document: CSVDocument
+    @ObservedObject var tableEditingHelper: CSVTableEditingHelper
     let openFiles: () -> Void
     let openURLs: ([URL]) -> Void
-    @State private var selectedDocumentRows: [Int] = []
-    @State private var selectedColumns: [Int] = []
-    @State private var hiddenColumns: Set<Int> = []
     @State private var isColumnInspectorPresented = false
-    @State private var filterColumn = 0
-    @State private var filterText = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,11 +24,7 @@ struct ContentView: View {
             } else {
                 CSVTableView(
                     document: document,
-                    selectedDocumentRows: $selectedDocumentRows,
-                    selectedColumns: $selectedColumns,
-                    hiddenColumns: $hiddenColumns,
-                    filterColumn: $filterColumn,
-                    filterText: filterText
+                    tableEditingHelper: tableEditingHelper
                 )
                 .id(document.fileURL)
             }
@@ -88,20 +80,20 @@ struct ContentView: View {
                         Button("Rename Column…", systemImage: "pencil") {
                             renameSelectedColumn()
                         }
-                        .disabled(selectedColumns.count != 1
-                            || selectedColumns[0] >= document.columnCount)
+                        .disabled(tableEditingHelper.selectedColumns.count != 1
+                            || tableEditingHelper.selectedColumns[0] >= document.columnCount)
 
                         Divider()
 
                         Button(deleteRowsTitle, systemImage: "minus") {
                             deleteSelectedRows()
                         }
-                        .disabled(selectedDocumentRows.isEmpty)
+                        .disabled(tableEditingHelper.selectedDocumentRows.isEmpty)
 
                         Button(deleteColumnsTitle, systemImage: "rectangle.split.1x2") {
                             deleteSelectedColumns()
                         }
-                        .disabled(selectedColumns.isEmpty)
+                        .disabled(tableEditingHelper.selectedColumns.isEmpty)
                     } label: {
                         Label("Table Actions", systemImage: "ellipsis.circle")
                     }
@@ -121,38 +113,25 @@ struct ContentView: View {
         .inspector(isPresented: $isColumnInspectorPresented) {
             TableInspector(
                 document: document,
-                hiddenColumns: $hiddenColumns,
-                filterColumn: $filterColumn,
-                filterText: $filterText
+                hiddenColumns: $tableEditingHelper.hiddenColumns,
+                filterColumn: $tableEditingHelper.filterColumn,
+                filterText: $tableEditingHelper.filterText
             )
             .inspectorColumnWidth(min: 210, ideal: 240, max: 320)
         }
         .navigationTitle(document.fileURL?.lastPathComponent ?? "Don CSV")
         .onChange(of: document.fileURL) {
-            clearSelection()
-            hiddenColumns.removeAll()
-            filterColumn = 0
-            filterText = ""
+            tableEditingHelper.reset()
             if document.fileURL == nil {
                 isColumnInspectorPresented = false
             }
         }
         .onChange(of: document.columnCount) {
-            hiddenColumns = hiddenColumns.filter { $0 < document.columnCount }
-            if document.columnCount == 0 {
-                filterColumn = 0
-                filterText = ""
-            } else if filterColumn >= document.columnCount {
-                filterColumn = document.columnCount - 1
-            }
-            selectedColumns = selectedColumns.filter { $0 < document.columnCount }
-            selectedDocumentRows = selectedDocumentRows.filter {
-                $0 > 0 && $0 < document.rows.count
-            }
-            syncSelectionToDocument()
+            tableEditingHelper.reconcile(with: document)
         }
-        .onChange(of: selectedDocumentRows) { syncSelectionToDocument() }
-        .onChange(of: selectedColumns) { syncSelectionToDocument() }
+        .onChange(of: document.rows.count) {
+            tableEditingHelper.reconcile(with: document)
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard !providers.isEmpty else { return false }
             let collector = DroppedURLCollector(count: providers.count, completion: openURLs)
@@ -168,63 +147,28 @@ struct ContentView: View {
     }
 
     private var deleteRowsTitle: String {
-        selectedDocumentRows.count > 1
-            ? "Delete \(selectedDocumentRows.count) Rows"
+        tableEditingHelper.selectedDocumentRows.count > 1
+            ? "Delete \(tableEditingHelper.selectedDocumentRows.count) Rows"
             : "Delete Row"
     }
 
     private var deleteColumnsTitle: String {
-        selectedColumns.count > 1
-            ? "Delete \(selectedColumns.count) Columns"
+        tableEditingHelper.selectedColumns.count > 1
+            ? "Delete \(tableEditingHelper.selectedColumns.count) Columns"
             : "Delete Column"
     }
 
     private func deleteSelectedRows() {
-        guard !selectedDocumentRows.isEmpty else { return }
-        document.deleteRows(selectedDocumentRows)
-        clearSelection()
+        tableEditingHelper.deleteSelectedRows(from: document)
     }
 
     private func deleteSelectedColumns() {
-        guard !selectedColumns.isEmpty else { return }
-        let deleted = selectedColumns
-        document.deleteColumns(deleted)
-        hiddenColumns = remappedColumnIndices(hiddenColumns, afterDeleting: deleted)
-        if !deleted.contains(filterColumn) {
-            filterColumn -= deleted.filter { $0 < filterColumn }.count
-        } else if document.columnCount > 0 {
-            filterColumn = min(filterColumn, document.columnCount - 1)
-        } else {
-            filterColumn = 0
-        }
-        clearSelection()
-    }
-
-    private func remappedColumnIndices(
-        _ columns: Set<Int>,
-        afterDeleting deleted: [Int]
-    ) -> Set<Int> {
-        let deletedSet = Set(deleted)
-        return Set(columns.compactMap { column in
-            guard !deletedSet.contains(column) else { return nil }
-            return column - deletedSet.filter { $0 < column }.count
-        })
-    }
-
-    private func clearSelection() {
-        selectedDocumentRows = []
-        selectedColumns = []
-        syncSelectionToDocument()
-    }
-
-    private func syncSelectionToDocument() {
-        document.selectedDocumentRowsForEditing = selectedDocumentRows
-        document.selectedColumnsForEditing = selectedColumns
+        tableEditingHelper.deleteSelectedColumns(from: document)
     }
 
     private func renameSelectedColumn() {
-        guard selectedColumns.count == 1 else { return }
-        let selectedColumn = selectedColumns[0]
+        guard tableEditingHelper.selectedColumns.count == 1 else { return }
+        let selectedColumn = tableEditingHelper.selectedColumns[0]
         guard selectedColumn >= 0, selectedColumn < document.columnCount else { return }
 
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
@@ -245,12 +189,12 @@ struct ContentView: View {
     }
 
     private var matchingRowCount: Int {
-        let query = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, filterColumn < document.columnCount else {
+        let query = tableEditingHelper.filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, tableEditingHelper.filterColumn < document.columnCount else {
             return document.dataRowCount
         }
         return document.rows.indices.dropFirst().filter { row in
-            document.value(row: row, column: filterColumn).range(
+            document.value(row: row, column: tableEditingHelper.filterColumn).range(
                 of: query,
                 options: [.caseInsensitive, .diacriticInsensitive]
             ) != nil
@@ -258,11 +202,11 @@ struct ContentView: View {
     }
 
     private var tableSummary: String {
-        let rowSummary = filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let rowSummary = tableEditingHelper.filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "\(document.dataRowCount) rows"
             : "\(matchingRowCount) of \(document.dataRowCount) rows"
-        let visibleColumns = max(document.columnCount - hiddenColumns.count, 0)
-        let columnSummary = hiddenColumns.isEmpty
+        let visibleColumns = max(document.columnCount - tableEditingHelper.hiddenColumns.count, 0)
+        let columnSummary = tableEditingHelper.hiddenColumns.isEmpty
             ? "\(document.columnCount) columns"
             : "\(visibleColumns) of \(document.columnCount) columns"
         return "\(rowSummary)  •  \(columnSummary)"
@@ -439,11 +383,31 @@ private final class DroppedURLCollector {
 
 struct CSVTableView: NSViewRepresentable {
     @ObservedObject var document: CSVDocument
-    @Binding var selectedDocumentRows: [Int]
-    @Binding var selectedColumns: [Int]
-    @Binding var hiddenColumns: Set<Int>
-    @Binding var filterColumn: Int
-    let filterText: String
+    @ObservedObject var tableEditingHelper: CSVTableEditingHelper
+
+    private var selectedDocumentRows: [Int] {
+        get { tableEditingHelper.selectedDocumentRows }
+        nonmutating set { tableEditingHelper.selectedDocumentRows = newValue }
+    }
+
+    private var selectedColumns: [Int] {
+        get { tableEditingHelper.selectedColumns }
+        nonmutating set { tableEditingHelper.selectedColumns = newValue }
+    }
+
+    private var hiddenColumns: Set<Int> {
+        get { tableEditingHelper.hiddenColumns }
+        nonmutating set { tableEditingHelper.hiddenColumns = newValue }
+    }
+
+    private var filterColumn: Int {
+        get { tableEditingHelper.filterColumn }
+        nonmutating set { tableEditingHelper.filterColumn = newValue }
+    }
+
+    private var filterText: String {
+        tableEditingHelper.filterText
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -733,29 +697,13 @@ struct CSVTableView: NSViewRepresentable {
 
         func deleteRows(_ visibleRows: ClosedRange<Int>) {
             let documentRows = documentRows(forVisibleRows: visibleRows)
-            guard !documentRows.isEmpty else { return }
-            parent.document.deleteRows(documentRows)
-            parent.selectedDocumentRows = []
-            parent.selectedColumns = []
+            parent.tableEditingHelper.deleteRows(documentRows, from: parent.document)
             refreshAfterMutation()
         }
 
         func deleteColumns(_ columns: ClosedRange<Int>) {
             let columnIndices = Array(columns)
-            guard !columnIndices.isEmpty else { return }
-            let deletedSet = Set(columnIndices)
-            parent.document.deleteColumns(columnIndices)
-            parent.hiddenColumns = Set(parent.hiddenColumns.compactMap { column in
-                guard !deletedSet.contains(column) else { return nil }
-                return column - deletedSet.filter { $0 < column }.count
-            })
-            if deletedSet.contains(parent.filterColumn) {
-                parent.filterColumn = max(min(parent.filterColumn, parent.document.columnCount - 1), 0)
-            } else {
-                parent.filterColumn -= deletedSet.filter { $0 < parent.filterColumn }.count
-            }
-            parent.selectedDocumentRows = []
-            parent.selectedColumns = []
+            parent.tableEditingHelper.deleteColumns(columnIndices, from: parent.document)
             refreshAfterMutation()
         }
 

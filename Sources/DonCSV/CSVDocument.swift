@@ -157,10 +157,6 @@ final class CSVDocument: ObservableObject {
         }
     }
 
-    /// Mirrored from the active table so menu commands can delete the current selection.
-    var selectedDocumentRowsForEditing: [Int] = []
-    var selectedColumnsForEditing: [Int] = []
-
     func pasteValues(
         _ values: [[String]],
         startingAtRow startRow: Int,

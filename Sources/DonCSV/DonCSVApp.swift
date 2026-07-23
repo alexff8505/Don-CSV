@@ -80,9 +80,11 @@ private struct CSVSessionScene: View {
 
     var body: some View {
         let document = coordinator.document(for: sessionID)
+        let tableEditingHelper = coordinator.tableEditingHelper(for: sessionID)
 
         ContentView(
             document: document,
+            tableEditingHelper: tableEditingHelper,
             openFiles: {
                 coordinator.presentOpenPanel(from: sessionID) {
                     openWindow(value: $0)

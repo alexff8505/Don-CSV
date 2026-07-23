@@ -12,6 +12,7 @@ final class CSVWindowCoordinator: ObservableObject {
     }
 
     private var documents: [UUID: CSVDocument] = [:]
+    private var tableEditingHelpers: [UUID: CSVTableEditingHelper] = [:]
     private var windows: [UUID: WeakWindow] = [:]
     private var pendingTabParents: [UUID: WeakWindow] = [:]
     private var separateWindowSessions: Set<UUID> = []
@@ -27,6 +28,16 @@ final class CSVWindowCoordinator: ObservableObject {
         let document = CSVDocument()
         documents[sessionID] = document
         return document
+    }
+
+    func tableEditingHelper(for sessionID: UUID) -> CSVTableEditingHelper {
+        if let helper = tableEditingHelpers[sessionID] {
+            return helper
+        }
+
+        let helper = CSVTableEditingHelper()
+        tableEditingHelpers[sessionID] = helper
+        return helper
     }
 
     func restoreInitialFileIfNeeded(into document: CSVDocument) {
@@ -124,6 +135,10 @@ final class CSVWindowCoordinator: ObservableObject {
         activeSessionID().flatMap { documents[$0] }
     }
 
+    func activeTableEditingHelper() -> CSVTableEditingHelper? {
+        activeSessionID().flatMap { tableEditingHelpers[$0] }
+    }
+
     func handleExternalOpen(
         requestID: UUID,
         urls: [URL],
@@ -173,6 +188,7 @@ final class CSVWindowCoordinator: ObservableObject {
             lastActiveWindow = windows.values.first(where: { $0.value != nil })
         }
         documents.removeValue(forKey: sessionID)?.close()
+        tableEditingHelpers.removeValue(forKey: sessionID)
     }
 
     private func sessionID(for url: URL) -> UUID? {
@@ -241,14 +257,16 @@ struct CSVAppCommands: Commands {
             Divider()
 
             Button("Delete Rows") {
-                guard let document = coordinator.activeDocument() else { return }
-                document.deleteRows(document.selectedDocumentRowsForEditing)
+                guard let document = coordinator.activeDocument(),
+                      let helper = coordinator.activeTableEditingHelper() else { return }
+                helper.deleteSelectedRows(from: document)
             }
             .keyboardShortcut(.delete, modifiers: [.command])
 
             Button("Delete Columns") {
-                guard let document = coordinator.activeDocument() else { return }
-                document.deleteColumns(document.selectedColumnsForEditing)
+                guard let document = coordinator.activeDocument(),
+                      let helper = coordinator.activeTableEditingHelper() else { return }
+                helper.deleteSelectedColumns(from: document)
             }
             .keyboardShortcut(.delete, modifiers: [.command, .option])
         }
