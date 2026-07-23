@@ -6,7 +6,7 @@
 
 - Select rectangular ranges with Shift-click or Shift-arrow navigation.
 - Select one or more complete rows from the numbered `#` gutter.
-- Delete every selected row or column from Table Actions, the context menu, the Table menu, or keyboard shortcuts.
+- Delete every selected row or column from the toolbar's Table menu, the context menu, the menu bar's Table menu, or keyboard shortcuts.
 - Use Command-Delete to remove selected rows and Command-Option-Delete to remove selected columns; plain Delete continues to clear cell contents.
 - Keep hidden columns and the active filter aligned through column deletion, Undo, and Redo.
 
@@ -20,7 +20,7 @@
 - Shows the ten most recently opened CSV files in File → Open Recent, with the standard Clear Menu action.
 - Commits an active cell edit and moves one visible cell to the right with Shift-Return.
 - Keeps empty tabs quiet by showing only the Open action until a CSV is loaded.
-- Groups table commands into one compact native toolbar menu and adds clear tooltips.
+- Groups Add and Delete commands into one compact native Table toolbar menu while keeping the Inspector as its own control.
 - Uses the standard macOS search field, including its built-in search and clear controls.
 - Reports filtered rows and visible columns accurately in the status bar.
 - Adds the expected Copy, Paste, and Clear Contents cell context menu.
