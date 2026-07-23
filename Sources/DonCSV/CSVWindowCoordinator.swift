@@ -237,6 +237,20 @@ struct CSVAppCommands: Commands {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Button("Add Column") { coordinator.activeDocument()?.addColumn() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button("Delete Rows") {
+                guard let document = coordinator.activeDocument() else { return }
+                document.deleteRows(document.selectedDocumentRowsForEditing)
+            }
+            .keyboardShortcut(.delete, modifiers: [.command])
+
+            Button("Delete Columns") {
+                guard let document = coordinator.activeDocument() else { return }
+                document.deleteColumns(document.selectedColumnsForEditing)
+            }
+            .keyboardShortcut(.delete, modifiers: [.command, .option])
         }
     }
 }

@@ -118,20 +118,48 @@ final class CSVDocument: ObservableObject {
     }
 
     func deleteRow(_ index: Int) {
-        guard rows.indices.contains(index) else { return }
-        mutate(actionName: "Delete Row") {
-            rows.remove(at: index)
-        }
+        deleteRows([index])
     }
 
     func deleteColumn(_ index: Int) {
-        guard index >= 0, index < columnCount else { return }
-        mutate(actionName: "Delete Column") {
-            for rowIndex in rows.indices where rows[rowIndex].indices.contains(index) {
-                rows[rowIndex].remove(at: index)
+        deleteColumns([index])
+    }
+
+    /// Deletes data or header rows by absolute document index. Indices are removed highest-first.
+    func deleteRows(_ indices: [Int]) {
+        let uniqueSorted = Set(indices)
+            .filter { rows.indices.contains($0) }
+            .sorted(by: >)
+        guard !uniqueSorted.isEmpty else { return }
+
+        let actionName = uniqueSorted.count == 1 ? "Delete Row" : "Delete Rows"
+        mutate(actionName: actionName) {
+            for index in uniqueSorted {
+                rows.remove(at: index)
             }
         }
     }
+
+    /// Deletes columns by index across every row. Indices are removed highest-first.
+    func deleteColumns(_ indices: [Int]) {
+        let uniqueSorted = Set(indices)
+            .filter { $0 >= 0 && $0 < columnCount }
+            .sorted(by: >)
+        guard !uniqueSorted.isEmpty else { return }
+
+        let actionName = uniqueSorted.count == 1 ? "Delete Column" : "Delete Columns"
+        mutate(actionName: actionName) {
+            for index in uniqueSorted {
+                for rowIndex in rows.indices where rows[rowIndex].indices.contains(index) {
+                    rows[rowIndex].remove(at: index)
+                }
+            }
+        }
+    }
+
+    /// Mirrored from the active table so menu commands can delete the current selection.
+    var selectedDocumentRowsForEditing: [Int] = []
+    var selectedColumnsForEditing: [Int] = []
 
     func pasteValues(
         _ values: [[String]],

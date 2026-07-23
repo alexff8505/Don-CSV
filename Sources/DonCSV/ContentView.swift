@@ -6,8 +6,8 @@ struct ContentView: View {
     @ObservedObject var document: CSVDocument
     let openFiles: () -> Void
     let openURLs: ([URL]) -> Void
-    @State private var selectedRow = -1
-    @State private var selectedColumn = -1
+    @State private var selectedDocumentRows: [Int] = []
+    @State private var selectedColumns: [Int] = []
     @State private var hiddenColumns: Set<Int> = []
     @State private var isColumnInspectorPresented = false
     @State private var filterColumn = 0
@@ -28,10 +28,10 @@ struct ContentView: View {
             } else {
                 CSVTableView(
                     document: document,
-                    selectedRow: $selectedRow,
-                    selectedColumn: $selectedColumn,
-                    hiddenColumns: hiddenColumns,
-                    filterColumn: document.columnCount > 0 ? filterColumn : nil,
+                    selectedDocumentRows: $selectedDocumentRows,
+                    selectedColumns: $selectedColumns,
+                    hiddenColumns: $hiddenColumns,
+                    filterColumn: $filterColumn,
                     filterText: filterText
                 )
                 .id(document.fileURL)
@@ -88,25 +88,20 @@ struct ContentView: View {
                         Button("Rename Column…", systemImage: "pencil") {
                             renameSelectedColumn()
                         }
-                        .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
+                        .disabled(selectedColumns.count != 1
+                            || selectedColumns[0] >= document.columnCount)
 
                         Divider()
 
-                        Button("Delete Row", systemImage: "minus") {
-                            if selectedRow >= 0 {
-                                document.deleteRow(selectedRow + 1)
-                                selectedRow = -1
-                            }
+                        Button(deleteRowsTitle, systemImage: "minus") {
+                            deleteSelectedRows()
                         }
-                        .disabled(selectedRow < 0 || selectedRow >= document.dataRowCount)
+                        .disabled(selectedDocumentRows.isEmpty)
 
-                        Button("Delete Column", systemImage: "rectangle.split.1x2") {
-                            if selectedColumn >= 0 {
-                                document.deleteColumn(selectedColumn)
-                                selectedColumn = -1
-                            }
+                        Button(deleteColumnsTitle, systemImage: "rectangle.split.1x2") {
+                            deleteSelectedColumns()
                         }
-                        .disabled(selectedColumn < 0 || selectedColumn >= document.columnCount)
+                        .disabled(selectedColumns.isEmpty)
                     } label: {
                         Label("Table Actions", systemImage: "ellipsis.circle")
                     }
@@ -134,8 +129,7 @@ struct ContentView: View {
         }
         .navigationTitle(document.fileURL?.lastPathComponent ?? "Don CSV")
         .onChange(of: document.fileURL) {
-            selectedRow = -1
-            selectedColumn = -1
+            clearSelection()
             hiddenColumns.removeAll()
             filterColumn = 0
             filterText = ""
@@ -151,10 +145,14 @@ struct ContentView: View {
             } else if filterColumn >= document.columnCount {
                 filterColumn = document.columnCount - 1
             }
-            if hiddenColumns.contains(selectedColumn) {
-                selectedColumn = -1
+            selectedColumns = selectedColumns.filter { $0 < document.columnCount }
+            selectedDocumentRows = selectedDocumentRows.filter {
+                $0 > 0 && $0 < document.rows.count
             }
+            syncSelectionToDocument()
         }
+        .onChange(of: selectedDocumentRows) { syncSelectionToDocument() }
+        .onChange(of: selectedColumns) { syncSelectionToDocument() }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard !providers.isEmpty else { return false }
             let collector = DroppedURLCollector(count: providers.count, completion: openURLs)
@@ -169,7 +167,64 @@ struct ContentView: View {
         }
     }
 
+    private var deleteRowsTitle: String {
+        selectedDocumentRows.count > 1
+            ? "Delete \(selectedDocumentRows.count) Rows"
+            : "Delete Row"
+    }
+
+    private var deleteColumnsTitle: String {
+        selectedColumns.count > 1
+            ? "Delete \(selectedColumns.count) Columns"
+            : "Delete Column"
+    }
+
+    private func deleteSelectedRows() {
+        guard !selectedDocumentRows.isEmpty else { return }
+        document.deleteRows(selectedDocumentRows)
+        clearSelection()
+    }
+
+    private func deleteSelectedColumns() {
+        guard !selectedColumns.isEmpty else { return }
+        let deleted = selectedColumns
+        document.deleteColumns(deleted)
+        hiddenColumns = remappedColumnIndices(hiddenColumns, afterDeleting: deleted)
+        if !deleted.contains(filterColumn) {
+            filterColumn -= deleted.filter { $0 < filterColumn }.count
+        } else if document.columnCount > 0 {
+            filterColumn = min(filterColumn, document.columnCount - 1)
+        } else {
+            filterColumn = 0
+        }
+        clearSelection()
+    }
+
+    private func remappedColumnIndices(
+        _ columns: Set<Int>,
+        afterDeleting deleted: [Int]
+    ) -> Set<Int> {
+        let deletedSet = Set(deleted)
+        return Set(columns.compactMap { column in
+            guard !deletedSet.contains(column) else { return nil }
+            return column - deletedSet.filter { $0 < column }.count
+        })
+    }
+
+    private func clearSelection() {
+        selectedDocumentRows = []
+        selectedColumns = []
+        syncSelectionToDocument()
+    }
+
+    private func syncSelectionToDocument() {
+        document.selectedDocumentRowsForEditing = selectedDocumentRows
+        document.selectedColumnsForEditing = selectedColumns
+    }
+
     private func renameSelectedColumn() {
+        guard selectedColumns.count == 1 else { return }
+        let selectedColumn = selectedColumns[0]
         guard selectedColumn >= 0, selectedColumn < document.columnCount else { return }
 
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
@@ -384,10 +439,10 @@ private final class DroppedURLCollector {
 
 struct CSVTableView: NSViewRepresentable {
     @ObservedObject var document: CSVDocument
-    @Binding var selectedRow: Int
-    @Binding var selectedColumn: Int
-    let hiddenColumns: Set<Int>
-    let filterColumn: Int?
+    @Binding var selectedDocumentRows: [Int]
+    @Binding var selectedColumns: [Int]
+    @Binding var hiddenColumns: Set<Int>
+    @Binding var filterColumn: Int
     let filterText: String
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -422,8 +477,8 @@ struct CSVTableView: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
         context.coordinator.tableView = table
-        table.selectionHandler = { [weak coordinator = context.coordinator] row, column in
-            coordinator?.selectCell(row: row, column: column)
+        table.selectionHandler = { [weak coordinator = context.coordinator] rows, columns in
+            coordinator?.updateSelection(visibleRows: rows, columns: columns)
         }
         table.editHandler = { [weak coordinator = context.coordinator] row, column, replacement in
             coordinator?.beginEditing(row: row, column: column, replacement: replacement)
@@ -436,6 +491,12 @@ struct CSVTableView: NSViewRepresentable {
         }
         table.pasteHandler = { [weak coordinator = context.coordinator] rows, columns, text in
             coordinator?.paste(text, intoRows: rows, columns: columns)
+        }
+        table.deleteRowsHandler = { [weak coordinator = context.coordinator] rows in
+            coordinator?.deleteRows(rows)
+        }
+        table.deleteColumnsHandler = { [weak coordinator = context.coordinator] columns in
+            coordinator?.deleteColumns(columns)
         }
         context.coordinator.rebuildColumns()
         return scrollView
@@ -454,7 +515,7 @@ struct CSVTableView: NSViewRepresentable {
             context.coordinator.updateColumnVisibility()
         }
 
-        if context.coordinator.lastFilterColumn != filterColumn
+        if context.coordinator.lastFilterColumn != context.coordinator.parent.filterColumn
             || context.coordinator.lastFilterText != filterText {
             context.coordinator.reloadForFilterChange()
         }
@@ -474,13 +535,17 @@ struct CSVTableView: NSViewRepresentable {
         weak var tableView: NSTableView?
         var lastRevision = -1
         var lastHiddenColumns: Set<Int> = []
-        var lastFilterColumn: Int?
+        var lastFilterColumn: Int = 0
         var lastFilterText = ""
         private var displayedDocumentRows: [Int] = []
         private var sortColumn: Int?
         private var sortAscending = false
 
         init(_ parent: CSVTableView) { self.parent = parent }
+
+        private var activeFilterColumn: Int? {
+            parent.document.columnCount > 0 ? parent.filterColumn : nil
+        }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
             displayedDocumentRows.count
@@ -586,8 +651,16 @@ struct CSVTableView: NSViewRepresentable {
         }
 
         func selectCell(row: Int, column: Int) {
-            parent.selectedRow = (documentRow(forVisibleRow: row) ?? 0) - 1
-            parent.selectedColumn = column
+            updateSelection(visibleRows: row...row, columns: column...column)
+        }
+
+        func updateSelection(visibleRows: ClosedRange<Int>?, columns: ClosedRange<Int>?) {
+            if let visibleRows {
+                parent.selectedDocumentRows = documentRows(forVisibleRows: visibleRows)
+            } else {
+                parent.selectedDocumentRows = []
+            }
+            parent.selectedColumns = columns.map(Array.init) ?? []
         }
 
         func beginEditing(row: Int, column: Int, replacement: String?) {
@@ -655,6 +728,34 @@ struct CSVTableView: NSViewRepresentable {
                 column: columns.lowerBound,
                 selectedColumnCount: columns.count
             )
+            refreshAfterMutation()
+        }
+
+        func deleteRows(_ visibleRows: ClosedRange<Int>) {
+            let documentRows = documentRows(forVisibleRows: visibleRows)
+            guard !documentRows.isEmpty else { return }
+            parent.document.deleteRows(documentRows)
+            parent.selectedDocumentRows = []
+            parent.selectedColumns = []
+            refreshAfterMutation()
+        }
+
+        func deleteColumns(_ columns: ClosedRange<Int>) {
+            let columnIndices = Array(columns)
+            guard !columnIndices.isEmpty else { return }
+            let deletedSet = Set(columnIndices)
+            parent.document.deleteColumns(columnIndices)
+            parent.hiddenColumns = Set(parent.hiddenColumns.compactMap { column in
+                guard !deletedSet.contains(column) else { return nil }
+                return column - deletedSet.filter { $0 < column }.count
+            })
+            if deletedSet.contains(parent.filterColumn) {
+                parent.filterColumn = max(min(parent.filterColumn, parent.document.columnCount - 1), 0)
+            } else {
+                parent.filterColumn -= deletedSet.filter { $0 < parent.filterColumn }.count
+            }
+            parent.selectedDocumentRows = []
+            parent.selectedColumns = []
             refreshAfterMutation()
         }
 
@@ -734,7 +835,7 @@ struct CSVTableView: NSViewRepresentable {
 
         func promptToRenameHeader(_ column: Int) {
             guard column >= 0, column < parent.document.columnCount else { return }
-            parent.selectedColumn = column
+            parent.selectedColumns = [column]
 
             let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
             input.stringValue = parent.document.value(row: 0, column: column)
@@ -761,7 +862,7 @@ struct CSVTableView: NSViewRepresentable {
 
             displayedDocumentRows = Array(parent.document.rows.indices.dropFirst())
             let query = parent.filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let filterColumn = parent.filterColumn,
+            if let filterColumn = activeFilterColumn,
                filterColumn < parent.document.columnCount,
                !query.isEmpty {
                 displayedDocumentRows = displayedDocumentRows.filter { row in
@@ -993,11 +1094,13 @@ private final class SpreadsheetHeaderView: NSTableHeaderView {
 
 @MainActor
 private final class SpreadsheetTableView: NSTableView {
-    var selectionHandler: ((Int, Int) -> Void)?
+    var selectionHandler: ((ClosedRange<Int>?, ClosedRange<Int>?) -> Void)?
     var editHandler: ((Int, Int, String?) -> Void)?
     var clearHandler: ((ClosedRange<Int>, ClosedRange<Int>) -> Void)?
     var copyHandler: ((ClosedRange<Int>, ClosedRange<Int>) -> String)?
     var pasteHandler: ((ClosedRange<Int>, ClosedRange<Int>, String) -> Void)?
+    var deleteRowsHandler: ((ClosedRange<Int>) -> Void)?
+    var deleteColumnsHandler: ((ClosedRange<Int>) -> Void)?
     private(set) var selectedCellRow = -1
     private(set) var selectedCellColumn = -1
     private var anchorRow = -1
@@ -1024,7 +1127,21 @@ private final class SpreadsheetTableView: NSTableView {
         let location = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: location)
         let physicalColumn = column(at: location)
-        guard clickedRow >= 0, physicalColumn > 0 else {
+        guard clickedRow >= 0 else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let extending = event.modifierFlags.contains(.shift)
+
+        // Click the row-number gutter to select entire rows.
+        if physicalColumn == 0 {
+            selectEntireRows(around: clickedRow, extending: extending)
+            window?.makeFirstResponder(self)
+            return
+        }
+
+        guard physicalColumn > 0 else {
             super.mouseDown(with: event)
             return
         }
@@ -1033,11 +1150,11 @@ private final class SpreadsheetTableView: NSTableView {
         selectCell(
             row: clickedRow,
             column: dataColumn,
-            extending: event.modifierFlags.contains(.shift)
+            extending: extending
         )
         window?.makeFirstResponder(self)
 
-        if event.clickCount >= 2, !event.modifierFlags.contains(.shift) {
+        if event.clickCount >= 2, !extending {
             editHandler?(clickedRow, dataColumn, nil)
         }
     }
@@ -1046,18 +1163,25 @@ private final class SpreadsheetTableView: NSTableView {
         let location = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: location)
         let physicalColumn = column(at: location)
-        guard clickedRow >= 0, physicalColumn > 0 else {
+        guard clickedRow >= 0, physicalColumn >= 0 else {
             return super.menu(for: event)
         }
 
-        let dataColumn = physicalColumn - 1
-        if !selectionContains(row: clickedRow, column: dataColumn) {
-            selectCell(row: clickedRow, column: dataColumn)
+        if physicalColumn == 0 {
+            if !rowIsSelected(clickedRow) {
+                selectEntireRows(around: clickedRow, extending: false)
+            }
+        } else {
+            let dataColumn = physicalColumn - 1
+            if !selectionContains(row: clickedRow, column: dataColumn) {
+                selectCell(row: clickedRow, column: dataColumn)
+            }
         }
         window?.makeFirstResponder(self)
 
         let menu = NSMenu()
         menu.autoenablesItems = false
+        let hasSelection = selectedCellRow >= 0 && selectedCellColumn >= 0
 
         let copyItem = menu.addItem(
             withTitle: "Copy",
@@ -1066,7 +1190,7 @@ private final class SpreadsheetTableView: NSTableView {
         )
         copyItem.keyEquivalentModifierMask = .command
         copyItem.target = self
-        copyItem.isEnabled = selectedCellRow >= 0
+        copyItem.isEnabled = hasSelection
 
         let pasteItem = menu.addItem(
             withTitle: "Paste",
@@ -1075,7 +1199,7 @@ private final class SpreadsheetTableView: NSTableView {
         )
         pasteItem.keyEquivalentModifierMask = .command
         pasteItem.target = self
-        pasteItem.isEnabled = selectedCellRow >= 0
+        pasteItem.isEnabled = hasSelection
             && NSPasteboard.general.string(forType: .string) != nil
 
         menu.addItem(.separator())
@@ -1086,7 +1210,29 @@ private final class SpreadsheetTableView: NSTableView {
             keyEquivalent: ""
         )
         clearItem.target = self
-        clearItem.isEnabled = selectedCellRow >= 0
+        clearItem.isEnabled = hasSelection
+
+        menu.addItem(.separator())
+
+        let rowCount = hasSelection ? selectedRows.count : 0
+        let columnCount = hasSelection ? selectedColumns.count : 0
+
+        let deleteRowsItem = menu.addItem(
+            withTitle: rowCount > 1 ? "Delete \(rowCount) Rows" : "Delete Row",
+            action: #selector(deleteSelectedRows(_:)),
+            keyEquivalent: ""
+        )
+        deleteRowsItem.target = self
+        deleteRowsItem.isEnabled = hasSelection
+
+        let deleteColumnsItem = menu.addItem(
+            withTitle: columnCount > 1 ? "Delete \(columnCount) Columns" : "Delete Column",
+            action: #selector(deleteSelectedColumns(_:)),
+            keyEquivalent: ""
+        )
+        deleteColumnsItem.target = self
+        deleteColumnsItem.isEnabled = hasSelection
+
         return menu
     }
 
@@ -1115,7 +1261,27 @@ private final class SpreadsheetTableView: NSTableView {
         setSelectionAppearance(true)
         scrollRowToVisible(row)
         scrollColumnToVisible(column + 1)
-        selectionHandler?(row, column)
+        notifySelectionChanged()
+    }
+
+    func selectEntireRows(around row: Int, extending: Bool) {
+        let visibleColumns = (0..<max(numberOfColumns - 1, 0)).filter {
+            !hiddenDataColumns.contains($0)
+        }
+        guard row >= 0, row < numberOfRows,
+              let first = visibleColumns.first,
+              let last = visibleColumns.last else { return }
+
+        setSelectionAppearance(false)
+        if !extending || anchorRow < 0 || anchorColumn < 0 {
+            anchorRow = row
+            anchorColumn = first
+        }
+        selectedCellRow = row
+        selectedCellColumn = last
+        setSelectionAppearance(true)
+        scrollRowToVisible(row)
+        notifySelectionChanged()
     }
 
     func clearCellSelection() {
@@ -1124,7 +1290,15 @@ private final class SpreadsheetTableView: NSTableView {
         selectedCellColumn = -1
         anchorRow = -1
         anchorColumn = -1
-        selectionHandler?(-1, -1)
+        selectionHandler?(nil, nil)
+    }
+
+    private func notifySelectionChanged() {
+        guard selectedCellRow >= 0, selectedCellColumn >= 0 else {
+            selectionHandler?(nil, nil)
+            return
+        }
+        selectionHandler?(selectedRows, selectedColumns)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -1171,7 +1345,15 @@ private final class SpreadsheetTableView: NSTableView {
         case 36, 76: // Return and keypad Enter
             editHandler?(selectedCellRow, selectedCellColumn, nil)
         case 51, 117: // Delete and forward delete
-            clearHandler?(selectedRows, selectedColumns)
+            if event.modifierFlags.contains(.command) {
+                if event.modifierFlags.contains(.option) {
+                    deleteColumnsHandler?(selectedColumns)
+                } else {
+                    deleteRowsHandler?(selectedRows)
+                }
+            } else {
+                clearHandler?(selectedRows, selectedColumns)
+            }
         default:
             guard event.modifierFlags.intersection([.command, .control]).isEmpty,
                   let characters = event.characters,
@@ -1257,6 +1439,16 @@ private final class SpreadsheetTableView: NSTableView {
     @objc private func clearContents(_ sender: Any?) {
         guard selectedCellRow >= 0, selectedCellColumn >= 0 else { return }
         clearHandler?(selectedRows, selectedColumns)
+    }
+
+    @objc private func deleteSelectedRows(_ sender: Any?) {
+        guard selectedCellRow >= 0 else { return }
+        deleteRowsHandler?(selectedRows)
+    }
+
+    @objc private func deleteSelectedColumns(_ sender: Any?) {
+        guard selectedCellColumn >= 0 else { return }
+        deleteColumnsHandler?(selectedColumns)
     }
 
     private func copySelection() {
