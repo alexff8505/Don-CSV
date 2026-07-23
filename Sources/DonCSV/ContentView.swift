@@ -587,7 +587,11 @@ struct CSVTableView: NSViewRepresentable {
 
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
-                finishEditing(field, moveToRow: row + 1, column: column)
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    finishEditing(field, movingRightFromRow: row, column: column)
+                } else {
+                    finishEditing(field, moveToRow: row + 1, column: column)
+                }
                 return true
             case #selector(NSResponder.insertTab(_:)):
                 finishEditing(field, tabbingForwardFromRow: row, column: column)
@@ -730,6 +734,19 @@ struct CSVTableView: NSViewRepresentable {
         private func finishEditing(_ field: CSVTextField, moveToRow row: Int, column: Int) {
             field.window?.makeFirstResponder(tableView)
             moveSelection(toRow: row, column: column)
+        }
+
+        private func finishEditing(
+            _ field: CSVTextField,
+            movingRightFromRow row: Int,
+            column: Int
+        ) {
+            field.window?.makeFirstResponder(tableView)
+            let visibleColumns = (0..<parent.document.columnCount).filter {
+                !parent.hiddenColumns.contains($0)
+            }
+            let targetColumn = visibleColumns.first(where: { $0 > column }) ?? column
+            moveSelection(toRow: row, column: targetColumn)
         }
 
         private func finishEditing(
